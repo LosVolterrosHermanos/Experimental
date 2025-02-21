@@ -79,35 +79,6 @@ def theory_tau(alpha, V,D):
         tau = tau1
     return tau
 
-def get_hessian_spectra(self):
-    """Get eigenvalues of the Hessian matrix of the problem
-
-    Returns
-    -------
-    ndarray
-        Array containing the eigenvalues of the Hessian matrix, computed as 
-        the squared singular values of the checkW matrix.
-    """
-    _, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
-    return s**2
-
-def get_rhos(self):
-    """Get squared-projections of the residual (b) in the direction of the eigenmodes of the Hessian.
-
-    Returns
-    -------
-    ndarray
-        Array containing the squared-projections of the residual vector b onto the eigenvectors
-        of the Hessian matrix, normalized by the corresponding eigenvalues.
-    """
-    Uvec, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
-
-    #Compute < ( D^1/2 W W^T D^(1/2) - z)^{-1}, D^(1/2) b >
-    check_beta_weight = jnp.tensordot(self.checkb,Uvec,axes=[[0],[0]])[0]
-
-    rhos = (check_beta_weight)**2 / s**2
-    rhos.astype(jnp.float32)
-    return rhos
 
 
 def theory_lambda_min(alpha):
