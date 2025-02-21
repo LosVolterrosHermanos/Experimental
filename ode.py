@@ -1,125 +1,143 @@
 import jax
 import jax.numpy as jnp
+from typing import NamedTuple, Callable
 
-def ode_resolvent_log_implicit_full(eigs_K, rho_init, chi_init, sigma_init, risk_infinity,
-                  g1, g2, g3, delta, batch, D, t_max, Dt):
-  """Generate the theoretical solution to momentum
 
-  Parameters
-  ----------
-  eigs_K : array d
-      eigenvalues of covariance matrix (W^TDW)
-  rho_init : array d
-    initial rho_j's (rho_j^2)
-  chi_init : array (d)
-      initialization of chi's
-  sigma_init : array (d)
-      initialization of sigma's (xi^2_j)
-  risk_infinity : scalar
-      represents the risk value at time infinity
-  WtranD : array (v x d)
-      WtranD where D = diag(j^(-2alpha)) and W is the random matrix
-  alpha : float
-      data complexity
-  V : float
-      vocabulary size
-  g1, g2, g3 : function(time)
-      learning rate functions
-  delta : function(time)
-      momentum function
-  batch : int
-      batch size
-  D : int
-      number of eigenvalues (i.e. shape of eigs_K)
-  t_max : float
-      The number of epochs
-  Dt : float
-      time step used in Euler
+class ODEInputs(NamedTuple):
+    eigs_K: jnp.ndarray      # eigenvalues of covariance matrix (W^TDW)
+    rho_init: jnp.ndarray    # initial rho_j's (rho_j^2)
+    chi_init: jnp.ndarray    # initialization of chi's
+    sigma_init: jnp.ndarray  # initialization of sigma's (xi^2_j)
+    risk_infinity: float     # risk value at time infinity
 
-  Returns
-  -------
-  t_grid: numpy.array(float)
-      the time steps used, which will discretize (0,t_max) into n_grid points
-  risks: numpy.array(float)
-      the values of the risk
 
-  """
-  #times = jnp.arange(0, t_max, step = Dt, dtype= jnp.float64)
-  times = jnp.arange(0, jnp.log(t_max), step = Dt, dtype= jnp.float32)
+class DanaHparams(NamedTuple):
+    g1: Callable[[float], float]  # learning rate function
+    g2: Callable[[float], float]  # learning rate function
+    g3: Callable[[float], float]  # learning rate function
+    delta: Callable[[float], float]  # momentum function
 
-  risk_init = risk_infinity + jnp.sum(eigs_K * rho_init)
 
-  def inverse_3x3(Omega):
-      # Extract matrix elements
-      a11, a12, a13 = Omega[0][0], Omega[0][1], Omega[0][2]
-      a21, a22, a23 = Omega[1][0], Omega[1][1], Omega[1][2]
-      a31, a32, a33 = Omega[2][0], Omega[2][1], Omega[2][2]
+def ode_resolvent_log_implicit_full(
+    inputs: ODEInputs,
+    opt_hparams: DanaHparams,
+    batch: int,
+    D: int,
+    t_max: float,
+    dt: float
+):
+    """Generate the theoretical solution to momentum
 
-      # Calculate determinant
-      det = (a11*a22*a33 + a12*a23*a31 + a13*a21*a32
-            - a13*a22*a31 - a11*a23*a32 - a12*a21*a33)
+    Parameters
+    ----------
+    inputs : ODEInputs
+        eigs_K : array d
+            eigenvalues of covariance matrix (W^TDW)
+        rho_init : array d
+            initial rho_j's (rho_j^2)
+        chi_init : array (d)
+            initialization of chi's
+        sigma_init : array (d)
+            initialization of sigma's (xi^2_j)
+        risk_infinity : scalar
+            represents the risk value at time infinity
 
-      #if abs(det) < 1e-10:
-      #    raise ValueError("Matrix is singular or nearly singular")
+    opt_hparams : optimizer hyperparameters for Dana
+        g1, g2, g3 : function(time)
+            learning rate functions
+        delta : function(time)
+            momentum function
 
-      # Calculate each element of inverse matrix
-      inv = [[0,0,0],[0,0,0],[0,0,0]]
+    batch : int
+        batch size
+    D : int
+        number of eigenvalues (i.e. shape of eigs_K)
+    t_max : float
+        The number of epochs
+    dt : float
+        time step used in Euler
 
-      inv[0][0] = (a22*a33 - a23*a32) / det
-      inv[0][1] = (a13*a32 - a12*a33) / det
-      inv[0][2] = (a12*a23 - a13*a22) / det
+    Returns
+    -------
+    t_grid: numpy.array(float)
+        the time steps used, which will discretize (0,t_max) into n_grid points
+    risks: numpy.array(float)
+        the values of the risk
+    """
+    times = jnp.arange(0, jnp.log(t_max), step=dt, dtype=jnp.float32)
+    risk_init = inputs.risk_infinity + jnp.sum(inputs.eigs_K * inputs.rho_init)
 
-      inv[1][0] = (a23*a31 - a21*a33) / det
-      inv[1][1] = (a11*a33 - a13*a31) / det
-      inv[1][2] = (a13*a21 - a11*a23) / det
+    def inverse_3x3(omega):
+        # Extract matrix elements
+        a11, a12, a13 = omega[0][0], omega[0][1], omega[0][2]
+        a21, a22, a23 = omega[1][0], omega[1][1], omega[1][2]
+        a31, a32, a33 = omega[2][0], omega[2][1], omega[2][2]
 
-      inv[2][0] = (a21*a32 - a22*a31) / det
-      inv[2][1] = (a12*a31 - a11*a32) / det
-      inv[2][2] = (a11*a22 - a12*a21) / det
+        # Calculate determinant
+        det = (a11*a22*a33 + a12*a23*a31 + a13*a21*a32
+               - a13*a22*a31 - a11*a23*a32 - a12*a21*a33)
 
-      return jnp.array(inv)
+        #if abs(det) < 1e-10:
+        #    raise ValueError("Matrix is singular or nearly singular")
 
-  def odeUpdate(stuff, time):
-    v, risk = stuff
-    timePlus = jnp.exp(time + Dt)
+        # Calculate each element of inverse matrix
+        inv = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
 
-    Omega11 = -2.0 * batch * g2(timePlus) * eigs_K + batch * (batch + 1.0) * g2(timePlus)**2 * eigs_K**2
-    Omega12 = g3(timePlus)**2 * jnp.ones_like(eigs_K)
-    Omega13 = 2.0 * g3(timePlus) * (-1.0 + g2(timePlus) * batch * eigs_K)
-    Omega1 = jnp.array([Omega11, Omega12, Omega13])
+        inv[0][0] = (a22*a33 - a23*a32) / det
+        inv[0][1] = (a13*a32 - a12*a33) / det
+        inv[0][2] = (a12*a23 - a13*a22) / det
 
-    Omega21 = batch * (batch + 1.0) * g1(timePlus)**2 * eigs_K**2
-    Omega22 = ( -2.0 * delta(timePlus) + delta(timePlus)**2 ) * jnp.ones_like(eigs_K)
-    Omega23 = 2.0 * g1(timePlus) * eigs_K * batch * ( 1.0 - delta(timePlus) )
-    Omega2 = jnp.array([Omega21, Omega22, Omega23])
+        inv[1][0] = (a23*a31 - a21*a33) / det
+        inv[1][1] = (a11*a33 - a13*a31) / det
+        inv[1][2] = (a13*a21 - a11*a23) / det
 
-    Omega31 = g1(timePlus) * batch * eigs_K
-    Omega32 = -g3(timePlus) * jnp.ones_like(eigs_K)
-    Omega33 = -delta(timePlus) - g2(timePlus) * batch * eigs_K
-    Omega3 = jnp.array([Omega31, Omega32, Omega33])
+        inv[2][0] = (a21*a32 - a22*a31) / det
+        inv[2][1] = (a12*a31 - a11*a32) / det
+        inv[2][2] = (a11*a22 - a12*a21) / det
 
-    Omega = jnp.array([Omega1, Omega2, Omega3]) #3 x 3 x d
+        return jnp.array(inv)
 
-    Identity = jnp.tensordot( jnp.eye(3), jnp.ones(D), 0 )
+    def ode_update(carry, time):
+        v, risk = carry
+        time_plus = jnp.exp(time + dt)
 
-    A = inverse_3x3(Identity - (Dt * timePlus) * Omega) #3 x 3 x d
+        omega_11 = -2.0 * batch * opt_hparams.g2(time_plus) * inputs.eigs_K + batch * (batch + 1.0) * opt_hparams.g2(time_plus)**2 * inputs.eigs_K**2
+        omega_12 = opt_hparams.g3(time_plus)**2 * jnp.ones_like(inputs.eigs_K)
+        omega_13 = 2.0 * opt_hparams.g3(time_plus) * (-1.0 + opt_hparams.g2(time_plus) * batch * inputs.eigs_K)
+        omega_1 = jnp.array([omega_11, omega_12, omega_13])
 
-    Gamma = jnp.array([batch * g2(timePlus)**2, batch * g1(timePlus)**2, 0.0])
-    z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), eigs_K)
-    G_Lambda = jnp.einsum('i,j->ij', Gamma, eigs_K) #3 x d
+        omega_21 = batch * (batch + 1.0) * opt_hparams.g1(time_plus)**2 * inputs.eigs_K**2
+        omega_22 = (-2.0 * opt_hparams.delta(time_plus) + opt_hparams.delta(time_plus)**2) * jnp.ones_like(inputs.eigs_K)
+        omega_23 = 2.0 * opt_hparams.g1(time_plus) * inputs.eigs_K * batch * (1.0 - opt_hparams.delta(time_plus))
+        omega_2 = jnp.array([omega_21, omega_22, omega_23])
 
-    x_temp = v + Dt * timePlus * risk_infinity * G_Lambda
-    x = jnp.einsum('ijk, jk -> ik', A, x_temp)
+        omega_31 = opt_hparams.g1(time_plus) * batch * inputs.eigs_K
+        omega_32 = -opt_hparams.g3(time_plus) * jnp.ones_like(inputs.eigs_K)
+        omega_33 = -opt_hparams.delta(time_plus) - opt_hparams.g2(time_plus) * batch * inputs.eigs_K
+        omega_3 = jnp.array([omega_31, omega_32, omega_33])
 
-    y = jnp.einsum('ijk, jk -> ik', A, G_Lambda)
+        omega = jnp.array([omega_1, omega_2, omega_3])  # 3 x 3 x d
 
-    vNew = x + ( Dt * timePlus * y * jnp.sum(x * z) / (1.0 - Dt * timePlus * jnp.sum(y * z)) )
-    #vNew = vNew.at[0].set(jnp.maximum(vNew[0], 0.0))
-    #vNew[0] = jnp.maximum(vNew[0], 10**(-7))
-    #vNew[2] = jnp.maximum(vNew[2], 10**(-7))
+        identity = jnp.tensordot(jnp.eye(3), jnp.ones(D), 0)
 
-    riskNew = risk_infinity + jnp.sum(eigs_K * vNew[0])
-    return (vNew, riskNew), risk #(risk, vNew[0])
+        A = inverse_3x3(identity - (dt * time_plus) * omega)  # 3 x 3 x d
 
-  _, risks = jax.lax.scan(odeUpdate,(jnp.array([rho_init,sigma_init, chi_init]),risk_init),times)
-  return jnp.exp(times), risks/2
+        Gamma = jnp.array([batch * opt_hparams.g2(time_plus)**2,
+                          batch * opt_hparams.g1(time_plus)**2, 0.0])
+        z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), inputs.eigs_K)
+        G_lambda = jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
+
+        x_temp = v + dt * time_plus * inputs.risk_infinity * G_lambda
+        x = jnp.einsum('ijk, jk -> ik', A, x_temp)
+
+        y = jnp.einsum('ijk, jk -> ik', A, G_lambda)
+
+        v_new = x + (dt * time_plus * y * jnp.sum(x * z) /
+                    (1.0 - dt * time_plus * jnp.sum(y * z)))
+
+        risk_new = inputs.risk_infinity + jnp.sum(inputs.eigs_K * v_new[0])
+        return (v_new, risk_new), risk
+
+    init_carry = (jnp.array([inputs.rho_init, inputs.sigma_init, inputs.chi_init]), risk_init)
+    _, risks = jax.lax.scan(ode_update, init_carry, times)
+    return jnp.exp(times), risks/2
