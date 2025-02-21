@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import jax.random as random
 import optax
 from tqdm import tqdm
 
