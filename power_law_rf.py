@@ -87,6 +87,36 @@ class PowerLawRF:
       risk = jnp.sum((proj - self.checkb)**2)
       return risk / 2
   
+  def get_hessian_spectra(self):
+    """Get eigenvalues of the Hessian matrix of the problem
+
+    Returns
+    -------
+    ndarray
+        Array containing the eigenvalues of the Hessian matrix, computed as 
+        the squared singular values of the checkW matrix.
+    """
+    _, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
+    return s**2
+  
+  def get_rhos(self):
+    """Get squared-projections of the residual (b) in the direction of the eigenmodes of the Hessian.
+
+    Returns
+    -------
+    ndarray
+        Array containing the squared-projections of the residual vector b onto the eigenvectors
+        of the Hessian matrix, normalized by the corresponding eigenvalues.
+    """
+    Uvec, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
+
+    #Compute < ( D^1/2 W W^T D^(1/2) - z)^{-1}, D^(1/2) b >
+    check_beta_weight = jnp.tensordot(self.checkb,Uvec,axes=[[0],[0]])[0]
+
+    rhos = (check_beta_weight)**2 / s**2
+    rhos.astype(jnp.float32)
+    return rhos
+
 
   def get_data(self, key, batch):
       """
@@ -116,13 +146,13 @@ class PowerLawRF:
           float: Theoretical prediction for the residual risk level
       """
       return theory_limitloss(self.alpha,self.beta,self.v,self.d)
-
+  
   def get_theory_rho_weights(self,num_splits, a, b, xs_per_split = 10000):
-  """Generate the initial rho_j's deterministically.
-  This performs many small contour integrals each surrounding the real eigenvalues
-  where the vector a contains the values for the lower (left) edges of the
-  contours and the vector b contains the values of the upper (right) edges of the
-  contours.
-  """
-  v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
-  return theory_rho_weights(v, d, alpha, beta, num_splits, a, b, xs_per_split)
+    """Generate the initial rho_j's deterministically.
+    This performs many small contour integrals each surrounding the real eigenvalues
+    where the vector a contains the values for the lower (left) edges of the
+    contours and the vector b contains the values of the upper (right) edges of the
+    contours.
+    """
+    v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
+    return theory_rho_weights(v, d, alpha, beta, num_splits, a, b, xs_per_split)
