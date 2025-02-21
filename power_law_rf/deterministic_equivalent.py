@@ -245,7 +245,7 @@ def chunk_weights(xs, density, a, b):
       return integrals
 
 
-def rho_weights(v,d,alpha,beta,num_splits, a, b, xs_per_split = 10000):
+def theory_rho_weights(v,d,alpha,beta,num_splits, a, b, xs_per_split = 10000):
   """Generate the initial rho_j's deterministically.
   This performs many small contour integrals each surrounding the real eigenvalues
   where the vector a contains the values for the lower (left) edges of the
