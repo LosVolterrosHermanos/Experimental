@@ -100,6 +100,29 @@ def theory_lambda_min(alpha):
 
   return (1 / (2 * alpha - 1)) * ((2 * alpha / (2 * alpha - 1) / c) ** (-2 * alpha))
 
+def theory_rhos(alpha,beta,d):
+    """Generate the initial rho_j's deterministically using 
+    the analysis of the deterministic equivalent.
+
+    Parameters
+    ----------
+    alpha, beta, d : floats
+        parameters of the model
+
+    Returns
+    -------
+    fake_eigs, fake_weights_pp + fake_weights_ac : vectors
+        fake_eigs: vector of fake eigenvalues (j^{-2alpha})
+        fake_weights_pp + fake_weights_ac: vector of fake weights, which from the theory
+        should approximate well the rho_j
+    """ 
+    fake_eigs = jnp.arange(1,d+1,1) ** (-2*alpha)
+    c_beta = jnp.sum( jnp.arange(1,d+1,1) ** (-2*(beta)))
+    fake_weights_pp = jnp.arange(1,d+1,1) ** (-2*(beta))
+    fake_weights_ac = (c_beta/d) * jnp.ones_like(fake_eigs)
+    return fake_eigs, fake_weights_pp + fake_weights_ac
+
+
 
 def theory_m_batched(v, d, alpha, xs,
                      eta = -6,
