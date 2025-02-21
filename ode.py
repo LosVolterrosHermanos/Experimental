@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 def ode_resolvent_log_implicit_full(eigs_K, rho_init, chi_init, sigma_init, risk_infinity,

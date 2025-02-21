@@ -17,12 +17,12 @@ def theory_limitloss(alpha, beta,V,D):
     """
     cstar = 0.0
     if 2*alpha >= 1.0:
-        kappa = power_law_RF.theory_kappa(alpha,V,D)
+        kappa = theory_kappa(alpha,V,D)
         cstar = jnp.sum( jnp.arange(1,V,1.0)**(-2.0*(beta+alpha))/( jnp.arange(1,V,1.0)**(-2.0*(alpha))*kappa*(D**(2*alpha)) + 1.0))
 
     if 2*alpha < 1.0:
         #tau = D/jnp.sum( jnp.arange(1,V,1.0)**(-2.0*alpha))
-        tau = power_law_RF.theory_tau(alpha,V,D)
+        tau = theory_tau(alpha,V,D)
         cstar = jnp.sum( jnp.arange(1,V,1.0)**(-2.0*(beta+alpha))/( jnp.arange(1,V,1.0)**(-2.0*(alpha))*tau + 1.0))
 
 
@@ -230,7 +230,7 @@ def theory_f_measure(v,d, alpha, beta, xs,
   if timeChecks:
       print("Running the Newton generator with {} steps".format(etasteps))
 
-  ms = power_law_RF.theory_m_batched(v,d,alpha,zs,eta,eta0,etasteps,batches)
+  ms = theory_m_batched(v,d,alpha,zs,eta,eta0,etasteps,batches)
 
   end = time.time()
   if timeChecks:
@@ -331,9 +331,9 @@ def theory_rho_weights(v,d,alpha,beta,num_splits, a, b, xs_per_split = 10000):
     batches = 1
 
     zs = xs.astype(jnp.complex64)
-    density = power_law_RF.theory_f_measure(v, d, alpha, beta, zs, err=err, batches = batches)
+    density = theory_f_measure(v, d, alpha, beta, zs, err=err, batches = batches)
 
-    rho_weights_split = power_law_RF.chunk_weights(xs, density, a_split, b_split)
+    rho_weights_split = chunk_weights(xs, density, a_split, b_split)
     rho_weights_split = jnp.array(rho_weights_split)
     rho_weights = jnp.concatenate([rho_weights, rho_weights_split], axis=0)
 
