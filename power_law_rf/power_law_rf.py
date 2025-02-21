@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as random
 import scipy as sp
 
-from theory import theory_limitloss, theory_rho_weights
+from deterministic_equivalent import theory_limit_loss, theory_rho_weights
 
 ########################################################
 # Power-law random features regression class
@@ -136,7 +136,7 @@ class PowerLawRF:
       
       return jnp.matmul(x, self.checkW), jnp.matmul(x, self.checkb)
   
-  def get_theory_limitloss(self):
+  def get_theory_limit_loss(self):
       """Returns the theoretical limit of the loss (residual risk) for the current model parameters.
       
       Calculates the theoretical prediction for the residual risk level (risk at infinite time)
@@ -145,7 +145,7 @@ class PowerLawRF:
       Returns:
           float: Theoretical prediction for the residual risk level
       """
-      return theory_limitloss(self.alpha,self.beta,self.v,self.d)
+      return theory_limit_loss(self.alpha,self.beta,self.v,self.d)
   
   def get_theory_rho_weights(self,num_splits, a, b, xs_per_split = 10000):
     """Generate the initial rho_j's deterministically.
