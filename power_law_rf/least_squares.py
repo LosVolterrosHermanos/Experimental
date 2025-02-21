@@ -47,8 +47,7 @@ def lsq_streaming_optax_simple(
         loss, grads = jax.value_and_grad(loss_fn)(params)
         updates, opt_state = tx.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
-        #return (params, opt_state), loss
-        return (params, opt_state), None
+        return (params, opt_state), loss
     
 
     # This generates an exponentially spaced sequence of times at which we record the loss.
@@ -59,7 +58,7 @@ def lsq_streaming_optax_simple(
     # This gives us the times at which we record the loss.
     
     losses=[]
-    losstimes = jnp.unique(jnp.concatenate(
+    loss_times = jnp.unique(jnp.concatenate(
         [jnp.array([0]),
         jnp.int32(
             1.1**jnp.arange(1,jnp.ceil(jnp.log(steps)/jnp.log(1.1)))
@@ -67,20 +66,20 @@ def lsq_streaming_optax_simple(
         jnp.array([steps])]
     ))
 
-    losstime_steps = losstimes[1:]-losstimes[:-1]
+    loss_time_steps = loss_times[1:]-loss_times[:-1]
     losses.append(loss_oracle(init))
     if tqdm_bar:
-        for increment in tqdm(losstime_steps):
+        for increment in tqdm(loss_time_steps):
             key, subkey = random.split(key)
             keyz = random.split(subkey, increment)
             state, _ = jax.lax.scan(train_step, state, keyz)
             pop_loss = loss_oracle(state[0])
             losses.append(pop_loss)
     else:
-        for increment in losstime_steps:
+        for increment in loss_time_steps:
             key, subkey = random.split(key)
             keyz = random.split(subkey, increment)
             state, _ = jax.lax.scan(train_step, state, keyz)
             pop_loss = loss_oracle(state[0])
             losses.append(pop_loss)
-    return losstimes, losses
+    return loss_times, losses

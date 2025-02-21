@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import scipy as sp
 import time
 
-def theory_limitloss(alpha, beta,V,D):
+def theory_limit_loss(alpha, beta,V,D):
     """Generate the 'exact' finite V, D expression the residual risk level (risk at time infinity)
 
     Parameters
@@ -99,13 +99,13 @@ def theory_lambda_min(alpha):
 
   return (1/(2*alpha-1))*((2*alpha/(2*alpha-1)/c)**(-2*alpha))
 
-def theory_m_batched(v,d, alpha, xs,
+def theory_m_batched(v, d, alpha, xs,
               eta = -6,
               eta0 = 6.0,
               etasteps=50,
               batches = 100,
               zbatch=1000):
-  """Generate the powerlaw m by newton's method
+  """Generate the powerlaw m by Newton's method
 
 
   Parameters
@@ -159,7 +159,7 @@ def theory_m_batched(v,d, alpha, xs,
   #mup_scannerjit =  jax.jit(mup_scanner)
 
   etas = jnp.logspace(eta0,eta,num = etasteps)
-  ms = jnp.concatenate( [jax.lax.scan(lambda m,z: mup_scanner(m,z,x),jnp.ones_like(x, dtype = jnp.complex64),etas)[0] for x in xsplit] )
+  ms = jnp.concatenate([jax.lax.scan(lambda m,z: mup_scanner(m,z,x),jnp.ones_like(x, dtype = jnp.complex64),etas)[0] for x in xsplit])
   #ms, _ = jax.lax.scan(mup_scanner,jnp.ones_like(xs),etas)
 
   return ms
