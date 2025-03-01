@@ -2,7 +2,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
-from tqdm import tqdm
+import tqdm
+
 
 def lsq_streaming_optax_simple(
         key,
@@ -69,7 +70,7 @@ def lsq_streaming_optax_simple(
     loss_time_steps = loss_times[1:]-loss_times[:-1]
     losses.append(loss_oracle(init))
     if tqdm_bar:
-        for increment in tqdm(loss_time_steps):
+        for increment in tqdm.tqdm(loss_time_steps):
             key, subkey = random.split(key)
             keyz = random.split(subkey, increment)
             state, _ = jax.lax.scan(train_step, state, keyz)
