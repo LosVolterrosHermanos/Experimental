@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from typing import NamedTuple, Callable
+from typing import NamedTuple, Callable, Union
 
 
 class ODEInputs(NamedTuple):
@@ -12,10 +12,10 @@ class ODEInputs(NamedTuple):
 
 
 class DanaHparams(NamedTuple):
-    g1: Callable[[float], float]  # learning rate function
-    g2: Callable[[float], float]  # learning rate function
-    g3: Callable[[float], float]  # learning rate function
-    delta: Callable[[float], float]  # momentum function
+    g1: Callable[[Union[float, jnp.ndarray]], float]  # learning rate function
+    g2: Callable[[Union[float, jnp.ndarray]], float]  # learning rate function
+    g3: Callable[[Union[float, jnp.ndarray]], float]  # learning rate function
+    delta: Callable[[Union[float, jnp.ndarray]], float]  # momentum function
 
 
 def ode_resolvent_log_implicit(
