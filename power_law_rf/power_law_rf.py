@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as random
 import scipy as sp
 
-from deterministic_equivalent import theory_limit_loss, theory_rho_weights
+from power_law_rf.deterministic_equivalent import theory_limit_loss, deterministic_rho_weights,theory_rhos
 
 ########################################################
 # Power-law random features regression class
@@ -147,12 +147,28 @@ class PowerLawRF:
       """
       return theory_limit_loss(self.alpha,self.beta,self.v,self.d)
   
-  def get_theory_rho_weights(self,num_splits, a, b, xs_per_split = 10000):
-    """Generate the initial rho_j's deterministically.
+  def get_theory_rhos(self):
+    """Get the theoretical rhos for the current model parameters.
+
+    Returns
+    -------
+    ndarray,ndarray
+        The first array contains (approximate) eigenvalues 
+        of the Hessian, and the second contains the 
+        corresponding rhos.  These are chosen to be a good
+        approximation of the true eigenvalues and rhos, in
+        in the sense of a inducing similar measures. In
+        particular, the eigenvalues do not need to match 
+        well for large index.
+    """
+    return theory_rhos(self.alpha,self.beta,self.d)
+
+  def get_deterministic_rho_weights(self,num_splits, a, b, xs_per_split = 10000):
+    """Generate the initial rho_j's deterministically (via self-consistent theory)
     This performs many small contour integrals each surrounding the real eigenvalues
     where the vector a contains the values for the lower (left) edges of the
     contours and the vector b contains the values of the upper (right) edges of the
     contours.
     """
     v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
-    return theory_rho_weights(v, d, alpha, beta, num_splits, a, b, xs_per_split)
+    return deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, xs_per_split)
