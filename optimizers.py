@@ -64,30 +64,25 @@ class DanaOptimizerState(NamedTuple):
   """State for the Dana algorithm."""
   count: chex.Array  # shape=(), dtype=jnp.int32.
   y: base.Updates
+  dimensions: base.Updates
 
 def dana_optimizer(
     g1: base.ScalarOrSchedule,
     g2: base.ScalarOrSchedule,
     g3: base.ScalarOrSchedule,
     Delta: base.ScalarOrSchedule,
-    y_dtype: Optional[chex.ArrayDType] = None,
     *,
-    nesterov: bool = False,
-    ) -> base.GradientTransformation:
-    """Rescale updates according to the Adam algorithm.
-
-    See :func:`optax.adam` for more details.
+    y_dtype: Optional[chex.ArrayDType] = None,
+  ) -> base.GradientTransformation:
+    """DANA optimizer.
 
     Args:
-        b1: Decay rate for the exponentially weighted average of grads.
-        b2: Decay rate for the exponentially weighted average of squared grads.
-        eps: Term added to the denominator to improve numerical stability.
-        eps_root: Term added to the denominator inside the square-root to improve
-        numerical stability when backpropagating gradients through the rescaling.
-        mu_dtype: Optional `dtype` to be used for the first order accumulator; if
+        g1: A scalar or schedule determining the first gradient coefficient.
+        g2: A scalar or schedule determining the second gradient coefficient.
+        g3: A scalar or schedule determining the third gradient coefficient.
+        Delta: A scalar or schedule determining the momentum decay rate.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator; if
         `None` then the `dtype` is inferred from `params` and `updates`.
-        nesterov: Whether to use Nesterov momentum. The variant of Adam with
-        Nesterov momentum is described in [Dozat 2016]
 
     Returns:
         A :class:`optax.GradientTransformation` object.
@@ -97,7 +92,7 @@ def dana_optimizer(
 
     def init_fn(params):
         y = otu.tree_zeros_like(params, dtype=y_dtype)  # Momentum
-        return DanaOptimizerState(count=jnp.zeros([], jnp.int32), y=y)
+        return DanaOptimizerState(count=jnp.zeros([], jnp.int32), y=y, dimensions=y)
 
     def update_fn(updates, state, params=None):
         del params
@@ -121,6 +116,65 @@ def dana_optimizer(
         y = otu.tree_cast(y, y_dtype)
         count_inc = numerics.safe_increment(state.count)
 
-        return updates, DanaOptimizerState(count=count_inc, y=y)
+        return updates, DanaOptimizerState(count=count_inc, y=y, dimensions=state.dimensions)
 
     return base.GradientTransformation(init_fn, update_fn)
+
+def dana_optimizer_layerwise(
+    g1: base.ScalarOrSchedule,
+    g2: base.ScalarOrSchedule,
+    g3: base.ScalarOrSchedule,
+    Delta: base.ScalarOrSchedule,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+    ) -> base.GradientTransformation:
+    """DANA optimizer, with layerwise dimension scaling.
+
+    This differs from the decaying momentum version, in that each layer is scaled by its dimension.
+    Args:
+        g1: A scalar or schedule determining the first gradient coefficient.
+        g2: A scalar or schedule determining the second gradient coefficient.
+        g3: A scalar or schedule determining the third gradient coefficient.
+        Delta: A scalar or schedule determining the momentum decay rate.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator; if
+        `None` then the `dtype` is inferred from `params` and `updates`.
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    def init_fn(params):
+        y = otu.tree_zeros_like(params, dtype=y_dtype)  # Momentum
+        dimensions = jax.tree.map(lambda x: jnp.float32(len(jnp.reshape(x,-1))), params)
+        return DanaOptimizerState(count=jnp.zeros([], jnp.int32), y=y, dimensions=dimensions)
+
+    def update_fn(updates, state, params=None):
+        del params
+        newDelta = Delta(state.count)
+        newg1 = g1(state.count)
+        newg2 = g2(state.count)
+        newg3 = g3(state.count)
+        
+
+        y = jax.tree.map(
+            lambda m,u : None if m is None else m*(1-newDelta) + newg1*u,
+            state.y,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+        updates = jax.tree.map(
+            lambda m,u,d : newg2*u if m is None else -1.0*(newg2*u + newg3*m/d),
+            y,
+            updates,
+            state.dimensions,
+            is_leaf=lambda x: x is None,
+        )
+        y = otu.tree_cast(y, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, DanaOptimizerState(count=count_inc, y=y, dimensions=state.dimensions)
+
+    return base.GradientTransformation(init_fn, update_fn)
+
