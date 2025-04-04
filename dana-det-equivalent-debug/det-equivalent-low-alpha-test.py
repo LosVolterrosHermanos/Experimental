@@ -86,7 +86,7 @@ param_dict = {
 # Create a hash of the parameters for the filename
 param_str = str(param_dict)
 filename_hash = hashlib.md5(param_str.encode()).hexdigest()[:10]
-pickle_filename = f'lsq_results_alpha{ALPHA}_beta{BETA}_V{V}_D{D}_{filename_hash}.pkl'
+pickle_filename = f'loss-curve-cache/lsq_results_alpha{ALPHA}_beta{BETA}_V{V}_D{D}_{filename_hash}.pkl'
 
 # Check if we have saved results with these parameters
 if os.path.exists(pickle_filename):
@@ -163,7 +163,7 @@ plt.legend()
 plt.tight_layout()
 
 # Save the plot
-plt.savefig('algorithm_vs_theory_comparison.png', dpi=300)
+plt.savefig('algorithm_vs_theory_comparison.pdf')
 plt.show()
 
 # Print final values for comparison

@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as random
 import scipy as sp
 
-from power_law_rf.deterministic_equivalent import theory_limit_loss, deterministic_rho_weights,theory_rhos
+from power_law_rf.deterministic_equivalent import theory_limit_loss, deterministic_rho_weights, theory_rhos, theory_f_measure
 
 ########################################################
 # Power-law random features regression class
@@ -163,12 +163,30 @@ class PowerLawRF:
     """
     return theory_rhos(self.alpha,self.beta,self.d)
 
-  def get_deterministic_rho_weights(self,num_splits, a, b, xs_per_split = 10000):
+  def get_deterministic_rho_weights(self, num_splits, a, b, xs_per_split=10000, f_measure_fn=theory_f_measure):
     """Generate the initial rho_j's deterministically (via self-consistent theory)
     This performs many small contour integrals each surrounding the real eigenvalues
     where the vector a contains the values for the lower (left) edges of the
     contours and the vector b contains the values of the upper (right) edges of the
     contours.
+    
+    Parameters
+    ----------
+    num_splits : int
+        Number of splits for the contour integrals
+    a : array
+        Lower (left) edges of the contours
+    b : array
+        Upper (right) edges of the contours
+    xs_per_split : int, optional
+        Number of x values to use per split, default is 10000
+    f_measure_fn : function, optional
+        Function to compute the measure, default is theory_f_measure
+        
+    Returns
+    -------
+    array
+        rho_j weights in order of largest j^{-2alpha} to smallest j^{-2alpha}
     """
     v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
-    return deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, xs_per_split)
+    return deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn, xs_per_split)

@@ -117,7 +117,9 @@ def theory_rhos(alpha,beta,d):
         should approximate well the rho_j
     """ 
     fake_eigs = jnp.arange(1,d+1,1) ** (-2*alpha)
-    c_beta = jnp.sum( jnp.arange(1,d+1,1) ** (-2*(beta)))
+    c_beta = 0.0
+    if beta > 0.5 and alpha > 0.5:
+        c_beta = jnp.sum( jnp.arange(1,d+1,1) ** (-2*(beta)))
     fake_weights_pp = jnp.arange(1,d+1,1) ** (-2*(beta))
     fake_weights_ac = (c_beta/d) * jnp.ones_like(fake_eigs)
     return fake_eigs, fake_weights_pp + fake_weights_ac

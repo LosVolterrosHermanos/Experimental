@@ -95,7 +95,7 @@ for D in D_VALUES:
     # Create a hash of the parameters for the filename
     param_str = str(param_dict)
     filename_hash = hashlib.md5(param_str.encode()).hexdigest()[:10]
-    pickle_filename = f'lsq_results_alpha{ALPHA}_beta{BETA}_V{V}_D{D}_{filename_hash}.pkl'
+    pickle_filename = f'loss-curve-cache/lsq_results_alpha{ALPHA}_beta{BETA}_V{V}_D{D}_{filename_hash}.pkl'
 
     # Check if we have saved results with these parameters
     if os.path.exists(pickle_filename):
@@ -141,7 +141,7 @@ plt.legend()
 plt.tight_layout()
 
 # Save the plot
-plt.savefig('theory_vs_sgd_comparison.png', dpi=300)
+plt.savefig('theory_vs_sgd_comparison.pdf')
 plt.show()
 
 # Print numerical results
