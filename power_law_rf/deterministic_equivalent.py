@@ -82,8 +82,12 @@ def theory_tau(alpha, V, D):
     return tau
 
 
-def theory_lambda_min(alpha):
-  """Generate left edge of the spectral measure (not accurate and only for alpha > 0.5)
+def theory_lambda_min(alpha, hardcoded_min = 0.1):
+  """Estimate left edge of the spectral measure. This value multiplied by D ** -2 alpha
+     should give an estimate for the the smallest positive eigenvalue of the hat(K) matrix.
+
+     For alpha <= 0.5, we don't have a formula so we hardcode a small positive value.
+     For alpha > 0.5, this is not a very accurate estimate.
 
   Parameters
   ----------
@@ -95,12 +99,16 @@ def theory_lambda_min(alpha):
   theoretical prediction for the norm
   """
 
+  if alpha <= 0.5:
+    return hardcoded_min
+
   TMAX = 1000.0
   c, _ = sp.integrate.quad(lambda x: 1.0 / (1.0 + x ** (2 * alpha)), 0.0, TMAX)
 
   return (1 / (2 * alpha - 1)) * ((2 * alpha / (2 * alpha - 1) / c) ** (-2 * alpha))
 
-def theory_rhos(alpha,beta,d):
+
+def theory_rhos(alpha, beta, d):
     """Generate the initial rho_j's deterministically using 
     the analysis of the deterministic equivalent.
 
@@ -201,7 +209,7 @@ def theory_m_batched_xsplit(v, d, alpha, xsplit, eta, eta0, eta_steps, j_batch):
   def mup_scan_body(ms, z, x):
       return mup_single(ms, z*1.0j+x), False
 
-  etas = jnp.logspace(eta0, eta, num=eta_steps)
+  etas = jnp.logspace(eta0, eta, num=eta_steps, dtype=jnp.float32)
   msplit = jax.lax.scan(lambda m, z: mup_scan_body(m, z, xsplit), jnp.ones_like(xsplit, dtype=jnp.complex64), etas)[0]
   return msplit
 
