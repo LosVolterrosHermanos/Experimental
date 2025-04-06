@@ -28,10 +28,10 @@ import power_law_rf.deterministic_equivalent as theory
 
 key = random.PRNGKey(0)
 
-ALPHA = 1.2
-BETA = 0.7
-V = 4000
-D = 1000
+ALPHA = 0.3
+BETA = 0.9
+V = 3200
+D = 800
 SGDBATCH=1
 STEPS = 10**5
 G2_SCALE = 0.5
@@ -95,7 +95,7 @@ initY = jnp.zeros(problem.d, dtype=jnp.float32)
 D=problem.d
 
 lower_bound = 0.5*theory.theory_lambda_min(problem.alpha, problem.v, problem.d)
-upper_bound = 1.0*1.1
+upper_bound = 2.0*1.1
 #fake_eigs = jnp.power(jnp.arange(1,D+1,dtype=jnp.float32),-2.0*problem.alpha)
 fake_eigs = theory.deterministic_spectra(problem.v, problem.d, problem.alpha)
 fake_eigs = jnp.array(fake_eigs)
