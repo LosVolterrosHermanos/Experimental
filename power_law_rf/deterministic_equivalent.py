@@ -7,6 +7,8 @@ import time
 def theory_limit_loss(alpha, beta, V, D):
     """Generate the 'exact' finite V, D expression the residual risk level (risk at time infinity)
 
+    RISK is defined as the MSE/2.0
+
     Parameters
     ----------
     alpha,beta : floats
@@ -26,7 +28,9 @@ def theory_limit_loss(alpha, beta, V, D):
         cstar = jnp.sum(jnp.arange(1, V, 1.0) ** (-2.0 * (beta + alpha)) / (jnp.arange(1, V, 1.0) ** (-2.0 * (alpha)) * tau + 1.0))
 
 
-    return cstar
+    return cstar/2.0
+
+
 
 
 def theory_kappa(alpha, V, D):
@@ -81,31 +85,70 @@ def theory_tau(alpha, V, D):
         tau = tau1
     return tau
 
-
-def theory_lambda_min(alpha, hardcoded_min = 0.1):
-  """Estimate left edge of the spectral measure. This value multiplied by D ** -2 alpha
-     should give an estimate for the the smallest positive eigenvalue of the hat(K) matrix.
-
-     For alpha <= 0.5, we don't have a formula so we hardcode a small positive value.
-     For alpha > 0.5, this is not a very accurate estimate.
-
-  Parameters
-  ----------
-  alpha : float
-      parameter of the model, ASSUMES V>D
-
-  Returns
-  -------
-  theoretical prediction for the norm
-  """
-
-  if alpha <= 0.5:
-    return hardcoded_min
-
-  TMAX = 1000.0
-  c, _ = sp.integrate.quad(lambda x: 1.0 / (1.0 + x ** (2 * alpha)), 0.0, TMAX)
-
-  return (1 / (2 * alpha - 1)) * ((2 * alpha / (2 * alpha - 1) / c) ** (-2 * alpha))
+def theory_lambda_min(alpha, V, D):
+    """Find the solution of the equation 1 = (1/d) * sum_{j=1}^v j^{-4alpha} * u^2 / (j^{-2alpha} * u - 1)^2
+    in the interval [-(v/d)*kappa * d^{2alpha}, 0] using binary search.
+    
+    Then calculate z = 1/u - (1/d) * sum_{j=1}^v j^{-2alpha} / (j^{-2alpha} * u - 1),
+    whhich is the minimum eigenvalue of the deterministic equivalent.
+    
+    Parameters
+    ----------
+    alpha : float
+        parameter of the model
+    V, D : integers
+        parameters of the model
+        
+    Returns
+    -------
+    z : float
+        The calculated value of z, which should be positive
+    """
+    # Calculate kappa
+    kappa = theory_kappa(alpha, V, D)
+    
+    # Define the interval for binary search
+    a = -(V/D)*kappa * (D ** (2 * alpha))
+    b = 0.0
+    
+    # Define the function to find the root of
+    def equation(u):
+        js = jnp.arange(1, V+1, 1)
+        j_2alpha = js ** (-2.0 * alpha)
+        j_4alpha = js ** (-4.0 * alpha)
+        
+        # Calculate the sum
+        sum_term = jnp.sum(j_4alpha * (u ** 2) / ((j_2alpha * u - 1.0) ** 2))
+        result = 1.0 - (1.0 / D) * sum_term
+        return result
+    
+    # Binary search to find the solution
+    tolerance = 1e-10
+    max_iterations = 100
+    
+    for i in range(max_iterations):
+        u = (a + b) / 2.0
+        f_u = equation(u)
+        
+        if abs(f_u) < tolerance:
+            break
+            
+        if f_u > 0:
+            b = u
+        else:
+            a = u
+    
+    # Now calculate z using the found u
+    js = jnp.arange(1, V+1, 1)
+    j_2alpha = js ** (-2.0 * alpha)
+    
+    # Calculate the sum term
+    sum_term = jnp.sum(j_2alpha / (j_2alpha * u - 1.0))
+    
+    # Calculate z
+    z = 1.0 / u - (1.0 / D) * sum_term
+    
+    return z
 
 
 def theory_rhos(alpha, beta, d):
@@ -218,7 +261,8 @@ def theory_m_batched_xsplit(v, d, alpha, xsplit, eta, eta0, eta_steps, j_batch):
 
 def theory_f_measure(v, d, alpha, beta, xs, m_fn = theory_m_batched,
                      err = -6.0, time_checks = False, j_batch=100):
-  """Generate the trace resolvent
+  """Generate the trace resolvent, weighted by the j^{-2beta},
+    and then biased by 1/z (used for rho_j weights)
 
 
   Parameters
@@ -274,7 +318,7 @@ def theory_f_measure(v, d, alpha, beta, xs, m_fn = theory_m_batched,
   for j in range(j_batch):
       F_measure += jnp.sum(jbt[j] / (jnp.outer(jt[j], ms) - jnp.outer(ones_jt_slice, zs + 1.0j * (10 ** eta))), axis=0)
 
-  return jnp.imag(F_measure / zs) / jnp.pi
+  return jnp.imag(F_measure/zs) / jnp.pi
 
 
 def chunk_weights(xs, density, a, b):
@@ -297,7 +341,7 @@ def chunk_weights(xs, density, a, b):
     return integrals
 
 
-def deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn = theory_f_measure, xs_per_split = 10000):
+def deterministic_rho_weights(v, d, alpha, beta, a, b, f_measure_fn = theory_f_measure, xs_per_split = None):
   """Generate the initial rho_j's deterministically.
   This performs many small contour integrals each surrounding the real eigenvalues
   where the vector a contains the values for the lower (left) edges of the
@@ -308,21 +352,11 @@ def deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn 
   of zs, but we are choosing the xs to discretize this density. We therefore need
   to choose the xs to be in a fine enough grid to give the desired accuracy.
 
-  This code uses a hacky method to choose the xs where the eigenvalues are divided
-  into num_splits different chunks (each containing the same num of eigenvalues)
-  so that the range of x values spanned is large for the large eigenvalues and
-  small for the small eigenvalues. Then this uses a linearly spaced grid within
-  each split so that each split uses the same number of xs.
-
-  The smallest eigenvalues actually don't need this dense of a grid, because they
-  make very small contributions, and the largest eigenvalues don't need this dense
-  of a grid because they are far apart. It is actually the intermediate
-  eigenvalues that are tricky because they are close together but still contribute
-  significantly.
+  This code uses a method to choose the xs where the eigenvalues are divided
+  into chunks which are smaller than geometrically decreasing chunks.
 
   Parameters
   ----------
-  num_splits (int): number of splits
   a (vector): lower values of z's to be used to compute the density starting
               from largest j^{-2alpha} to smallest j^{-2alpha}
   b (vector): upper values of z's to be used to compute the density starting from
@@ -332,25 +366,53 @@ def deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn 
   Returns
   -------
   rho_weights: vector
-      returns rho_j weights in order of largest j^{-2alpha} to smallest j^{-2alpha}
+      returns rho_j weights in order of largest eigenvalue to smallest eigenvalue
   """
-  a_splits = jnp.split(a, num_splits)
-  b_splits = jnp.split(b, num_splits)
+  if xs_per_split is None:
+    xs_per_split = d
+  # Sort a and b in decreasing order
+  sort_idx = jnp.argsort(-a)  # Negative to sort in descending order
+  a = a[sort_idx]
+  b = b[sort_idx]
 
-  # Vectorize lower and upper bounds
-  lower_bounds = jnp.array([jnp.min(split) for split in a_splits])
-  upper_bounds = jnp.array([jnp.max(split) for split in b_splits])
+  n = len(a)
 
-  # Generate xs and zs for all splits
-  xs = jnp.vstack([jnp.linspace(lower, upper, xs_per_split) for lower, upper in zip(lower_bounds, upper_bounds)])
-  zs = xs.astype(jnp.complex64)
+  # Create sequence starting from right edge, decreasing by factor that depends on step j
+  right_edge = 1.1
+  left_edge = jnp.min(a)*0.5
+  sequence = []
+  current = right_edge
+  j = 1.0
+  while current >= left_edge:
+    sequence.append(current)
+    # Calculate reduction factor based on alpha and step j
+    reduction = 1.0 - 1.0/jnp.sqrt(j+2)
+    current = current * reduction
+    j += 1.0
+
+  # Create bin endpoints by shifting sequence
+  left_bin_endpoints = sequence[1:]  # All but first element
+  right_bin_endpoints = sequence[:-1]  # All but last element
+
+  a_splits = []
+  b_splits = []
+
+  # For each bin defined by the endpoints
+  for left, right in zip(left_bin_endpoints, right_bin_endpoints):
+      # Find indices where a values fall within this bin
+      bin_indices = jnp.where((a >= left) & (a <= right))[0]
+      
+      if len(bin_indices) > 0:
+          # Add the a and b values for these indices to the splits
+          a_splits.append(a[bin_indices])
+          b_splits.append(b[bin_indices])
 
   rho_weights = jnp.array([])
   for a_split, b_split in zip(a_splits, b_splits):
     lower_bound_split = jnp.min(a_split)
     upper_bound_split = jnp.max(b_split)
     xs = jnp.linspace(lower_bound_split, upper_bound_split, xs_per_split)
-    err = -10
+    err = -20.0
     batches = 1
 
     zs = xs.astype(jnp.complex64)
@@ -360,4 +422,130 @@ def deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn 
     rho_weights_split = jnp.array(rho_weights_split)
     rho_weights = jnp.concatenate([rho_weights, rho_weights_split], axis=0)
 
+  # Ensure we return exactly n weights
+  if len(rho_weights) != n:
+      raise ValueError(f"Generated {len(rho_weights)} weights but expected {n}")
+
   return rho_weights
+
+
+def theory_empirical_measure(v, d, alpha, xs, m_fn = theory_m_batched,
+                     err = -6.0, time_checks = False, j_batch=100):
+  """Generate the trace resolvent
+
+
+  Parameters
+  ----------
+  v, d, alpha : floats
+      parameters of the model
+  xs : floats
+      X-values at which to return the trace-resolvent
+  err : float
+      Error tolerance, log scale
+  m_fn: function
+      A function that will return ms on a set of zs
+  time_checks: bool
+      Print times for each part
+  j_batch: batch size across v dimension
+
+  Returns
+  -------
+  density: vector
+      values of the density of the deterministic equivalent for the empirical measure
+  """
+
+  eps = 10.0**(err)
+  zs = xs + 1.0j*eps
+
+  if time_checks:
+      print("The number of points on the spectral curve is {}".format(len(xs)))
+
+  eta = jnp.log10(eps * (d ** (-2 * alpha)))
+  eta0 = 6
+  eta_steps = jnp.int32(40 + 10 * (2 * alpha) * jnp.log(d))
+
+  start = time.time()
+  if time_checks:
+      print("Running the Newton generator with {} steps".format(eta_steps))
+
+  ms = m_fn(v, d, alpha, zs, eta, eta0, eta_steps, j_batch)
+
+  end = time.time()
+  if time_checks:
+      print("Completed Newton in {} time".format(end - start))
+  start = end
+
+  js = jnp.arange(1, v+1, 1) ** (-2.0 * alpha)
+  jbs = jnp.ones_like(js)
+
+  jt = jnp.reshape(js, (j_batch, -1))
+  jbt = jnp.expand_dims(jnp.reshape(jbs, (j_batch, -1)), -1)
+  ones_jt_slice = jnp.ones_like(jt)[0]
+
+  empirical_measure = jnp.zeros_like(ms)
+
+  for j in range(j_batch):
+      empirical_measure += jnp.sum(jbt[j] / (jnp.outer(jt[j], ms) - jnp.outer(ones_jt_slice, zs + 1.0j * (10 ** eta))), axis=0)
+
+  return jnp.imag(empirical_measure) / jnp.pi
+
+def deterministic_spectra(v,d,alpha, xs_per_split=None):
+    """Generate the eigenvalues of the deterministic equivalent.
+
+    These are taken as points at which the (unnormalized) 
+    cdf of the measure crosses integer + 0.5 thresholds.
+
+    Parameters
+    ----------
+    v, d, alpha : floats
+        parameters of the model
+    xs_per_split : int
+        the number of x values to use per split
+
+    Returns
+    -------
+    spectra : vector
+        the eigenvalues of the deterministic equivalent
+    """
+    if xs_per_split is None:
+        xs_per_split = d
+    right_edge = 1.1
+    left_edge = theory_lambda_min(alpha,v,d)*0.5
+    # Create sequence starting from right edge, decreasing by factor that depends on step j
+    sequence = []
+    current = right_edge
+    j = 1.0
+    while current >= left_edge:
+        sequence.append(current)
+        # Calculate reduction factor based on alpha and step j
+        #reduction = 1 - max(min(2*alpha/j, 0.5),1.0/jnp.sqrt(j))
+        reduction = 1.0 - 1.0/jnp.sqrt(j+2)
+        current = current * reduction
+        j += 1.0
+
+    # Create bin endpoints by shifting sequence
+    left_bin_endpoints = sequence[1:]  # All but first element
+    right_bin_endpoints = sequence[:-1]  # All but last element
+
+    spectra = []
+    current_cdf = 0.0
+
+    for left, right in zip(left_bin_endpoints, right_bin_endpoints):
+        xs = jnp.linspace(left, right, xs_per_split)
+        err = -20.0
+        batches = 1
+        zs = xs.astype(jnp.complex64)
+        density = theory_empirical_measure(v, d, alpha, zs, err=err, j_batch=batches)
+
+        cdf = jnp.cumsum(density)*(xs[1]-xs[0])
+        cdf = (cdf[-1]+current_cdf)-cdf
+        current_cdf = cdf[0]
+        def frac(x):
+            return x - jnp.floor(x)
+        # Find points where cdf crosses integer + 0.5 thresholds
+        for i in range(len(xs)-1):
+            if cdf[i] > cdf[i+1]: # Check we're going in descending order
+                if frac(cdf[i]) > 0.5 and frac(cdf[i+1]) < 0.5:
+                    spectra.append(xs[i])
+
+    return jnp.sort(jnp.array(spectra))[::-1]

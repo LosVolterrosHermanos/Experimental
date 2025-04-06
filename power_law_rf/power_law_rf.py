@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as random
 import scipy as sp
 
-from power_law_rf.deterministic_equivalent import theory_limit_loss, deterministic_rho_weights, theory_rhos, theory_f_measure
+from .deterministic_equivalent import theory_limit_loss, deterministic_rho_weights, theory_rhos, theory_f_measure
 
 ########################################################
 # Power-law random features regression class
@@ -42,7 +42,7 @@ class PowerLawRF:
       self.x_grid=jnp.arange(1, self.v+1).reshape(1,self.v)
       self.population_eigenvalues = self.x_grid**(-self.alpha)
       self.b = self.x_grid.transpose()**(-beta)
-      self.population_trace = jnp.sum(self.population_eigenvalues)
+      self.population_trace = jnp.sum(self.population_eigenvalues**2)
       self.checkW = W * self.population_eigenvalues.T
       self.checkb = self.x_grid.transpose()**(-alpha-beta)
       
@@ -73,6 +73,8 @@ class PowerLawRF:
       The population risk is the expected squared error over the data distribution.
       For power-law random features regression, this can be computed analytically
       without sampling data.
+
+      RISK is defined as the MSE/2.0
       
       Args:
           w (ndarray): Weight vector of shape (d,)
@@ -147,6 +149,27 @@ class PowerLawRF:
       """
       return theory_limit_loss(self.alpha,self.beta,self.v,self.d)
   
+  def get_empirical_limit_loss(self):
+    """Returns the empirical limit of the loss (residual risk) for the current model parameters.
+    
+    Calculates the empirical prediction for the residual risk level (risk at infinite time)
+    using the model's alpha, beta, v (number of random features), and d (input dimension) parameters.
+    
+    Returns:
+        float: Empirical prediction for the residual risk level
+    """
+    # Using the normal equation: (W^T W)w = W^T b
+    W_T_W = jnp.matmul(self.checkW.T, self.checkW)
+    W_T_b = jnp.matmul(self.checkW.T, self.checkb)
+    
+    # Solve the linear system
+    w = jnp.linalg.solve(W_T_W, W_T_b)
+
+    actual_risk = self.get_population_risk(w)
+
+    return actual_risk
+    
+  
   def get_theory_rhos(self):
     """Get the theoretical rhos for the current model parameters.
 
@@ -163,7 +186,7 @@ class PowerLawRF:
     """
     return theory_rhos(self.alpha,self.beta,self.d)
 
-  def get_deterministic_rho_weights(self, num_splits, a, b, xs_per_split=10000, f_measure_fn=theory_f_measure):
+  def get_deterministic_rho_weights(self, a, b, xs_per_split=None, f_measure_fn=theory_f_measure):
     """Generate the initial rho_j's deterministically (via self-consistent theory)
     This performs many small contour integrals each surrounding the real eigenvalues
     where the vector a contains the values for the lower (left) edges of the
@@ -172,8 +195,6 @@ class PowerLawRF:
     
     Parameters
     ----------
-    num_splits : int
-        Number of splits for the contour integrals
     a : array
         Lower (left) edges of the contours
     b : array
@@ -189,4 +210,4 @@ class PowerLawRF:
         rho_j weights in order of largest j^{-2alpha} to smallest j^{-2alpha}
     """
     v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
-    return deterministic_rho_weights(v, d, alpha, beta, num_splits, a, b, f_measure_fn, xs_per_split)
+    return deterministic_rho_weights(v, d, alpha, beta, a, b, f_measure_fn, xs_per_split)
