@@ -378,7 +378,7 @@ def deterministic_rho_weights(v, d, alpha, beta, a, b, f_measure_fn = theory_f_m
   n = len(a)
 
   # Create sequence starting from right edge, decreasing by factor that depends on step j
-  right_edge = 1.1
+  right_edge = 2.0*1.1
   left_edge = jnp.min(a)*0.5
   sequence = []
   current = right_edge
@@ -509,7 +509,7 @@ def deterministic_spectra(v,d,alpha, xs_per_split=None):
     """
     if xs_per_split is None:
         xs_per_split = d
-    right_edge = 1.1
+    right_edge = 2.0*1.1
     left_edge = theory_lambda_min(alpha,v,d)*0.5
     # Create sequence starting from right edge, decreasing by factor that depends on step j
     sequence = []
