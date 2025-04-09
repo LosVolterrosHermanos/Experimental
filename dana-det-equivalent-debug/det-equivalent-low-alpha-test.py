@@ -28,10 +28,10 @@ import power_law_rf.deterministic_equivalent as theory
 
 key = random.PRNGKey(0)
 
-ALPHA = 0.3
-BETA = 0.9
-V = 3200
-D = 800
+ALPHA = 0.2
+BETA = 2.0
+V = 1600
+D = 400
 SGDBATCH=1
 STEPS = 10**5
 G2_SCALE = 0.5
@@ -85,9 +85,6 @@ else:
     with open(pickle_filename, 'wb') as f:
         pickle.dump((danadecaytimes, danadecaylosses), f)
 
-#We will plot double the loss
-twicedanadecaylosses = np.array(danadecaylosses) * 2.0
-
 #Initialize the rhos
 initTheta = jnp.zeros(problem.d, dtype=jnp.float32)
 initY = jnp.zeros(problem.d, dtype=jnp.float32)
@@ -140,13 +137,13 @@ odeTimes_approx, odeRisks_approx = ode_resolvent_log_implicit(
 
 # Create comparison plot
 plt.figure(figsize=(10, 6))
-plt.loglog(danadecaytimes, twicedanadecaylosses, 'b-', label='Algorithm (lsq_streaming_optax_simple)', linewidth=2)
+plt.loglog(danadecaytimes, danadecaylosses, 'b-', label='Algorithm (lsq_streaming_optax_simple)', linewidth=2)
 plt.loglog(odeTimes_dana_decay3, odeRisks_dana_decay3, 'r--', label='Theory (exact ODE)', linewidth=2)
 plt.loglog(odeTimes_approx, odeRisks_approx, 'g--', label='Theory (approximate ODE)', linewidth=2)
-plt.axhline(y=2.0*riskInftyTheory/(1-G2_SCALE/2.0), color='k', linestyle=':', label='Theoretical Limit (SGD adjusted)', linewidth=2)
+plt.axhline(y=riskInftyTheory/(1-G2_SCALE/2.0), color='k', linestyle=':', label='Theoretical Limit (SGD adjusted)', linewidth=2)
 
 plt.xlabel('Time (log scale)')
-plt.ylabel('Twice-Loss')
+plt.ylabel('Risk (MSE/2)')
 plt.title(f'Comparison of Algorithm vs Theory (α={ALPHA}, β={BETA}, V={V}, D={D})')
 plt.grid(True, which="both", ls="-", alpha=0.2)
 plt.legend()
@@ -157,8 +154,8 @@ plt.savefig(f'algorithm_vs_theory_comparison_alpha{ALPHA}_beta{BETA}_V{V}_D{D}.p
 plt.show()
 
 # Print final values for comparison
-print(f"Final algorithm loss: {twicedanadecaylosses[-1]:.6f}")
+print(f"Final algorithm loss: {danadecaylosses[-1]:.6f}")
 print(f"Final exact theory loss: {odeRisks_dana_decay3[-1]:.6f}")
 print(f"Final approximate theory loss: {odeRisks_approx[-1]:.6f}")
 print(f"Theoretical limit: {riskInftyTheory:.6f}")
-print(f"Adjusted theoretical limit (SGD): {2.0*riskInftyTheory/(1-G2_SCALE/2.0):.6f}")
+print(f"Adjusted theoretical limit (SGD): {riskInftyTheory/(1-G2_SCALE/2.0):.6f}")

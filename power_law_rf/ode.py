@@ -28,7 +28,7 @@ def ode_resolvent_log_implicit(
     approximate = False,
 ):
     """Generate the theoretical solution to momentum. 
-    Outputs TWICE the risk.
+    Outputs the risk (MSE/2).
 
     Parameters
     ----------
@@ -43,7 +43,7 @@ def ode_resolvent_log_implicit(
             initialization of sigma's (xi^2_j)
         risk_infinity : scalar
             represents the risk value at time infinity (note:
-            this is NOT twice the risk)
+            risk=MSE/2)
 
     opt_hparams : optimizer hyperparameters for Dana
         g1, g2, g3 : function(time)
@@ -70,9 +70,9 @@ def ode_resolvent_log_implicit(
     g1, g2, g3, delta = opt_hparams.g1, opt_hparams.g2, opt_hparams.g3, opt_hparams.delta
     eigs_K = inputs.eigs_K
     rho_init, chi_init, sigma_init = inputs.rho_init, inputs.chi_init, inputs.sigma_init
-    twice_risk_infinity = 2.0*inputs.risk_infinity
+    MSE_infinity = 2.0*inputs.risk_infinity
     times = jnp.arange(0, jnp.log(t_max), step=dt, dtype=jnp.float32)
-    risk_init = twice_risk_infinity + jnp.sum(inputs.eigs_K * inputs.rho_init)
+    MSE_init = MSE_infinity + jnp.sum(inputs.eigs_K * inputs.rho_init)
     
 
     def inverse_3x3(omega):
@@ -145,7 +145,7 @@ def ode_resolvent_log_implicit(
 
 
     def ode_update(carry, time):
-        v, twice_risk = carry
+        v, MSE = carry
         time_plus = jnp.exp(time + dt)
         omega = omega_approximate(time_plus) if approximate else omega_full(time_plus)
         identity = jnp.tensordot(jnp.eye(3), jnp.ones(D), 0)
@@ -157,7 +157,7 @@ def ode_resolvent_log_implicit(
         z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), eigs_K)
         G_lambda = jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
 
-        x_temp = v + dt * time_plus * twice_risk_infinity * G_lambda
+        x_temp = v + dt * time_plus * MSE_infinity * G_lambda
 
         x = jnp.einsum('ijk, jk -> ik', A, x_temp)
 
@@ -166,9 +166,9 @@ def ode_resolvent_log_implicit(
         v_new = x + (dt * time_plus * y * jnp.sum(x * z) /
                     (1.0 - dt * time_plus * jnp.sum(y * z)))
 
-        twice_risk_new = twice_risk_infinity + jnp.sum(eigs_K * v_new[0])
-        return (v_new, twice_risk_new), twice_risk
+        MSE_new = MSE_infinity + jnp.sum(eigs_K * v_new[0])
+        return (v_new, MSE_new), MSE_new
 
-    init_carry = (jnp.array([rho_init, sigma_init, chi_init]), risk_init)
-    _, twice_risks = jax.lax.scan(ode_update, init_carry, times)
-    return jnp.exp(times), twice_risks
+    init_carry = (jnp.array([rho_init, sigma_init, chi_init]), MSE_init)
+    _, MSE = jax.lax.scan(ode_update, init_carry, times)
+    return jnp.exp(times), MSE/2.0 # MSE/2.0 is the risk
