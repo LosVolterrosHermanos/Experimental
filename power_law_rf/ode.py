@@ -27,8 +27,8 @@ def ode_resolvent_log_implicit(
     dt: float,
     approximate = False,
 ):
-    """Generate the theoretical solution to momentum. 
-    Outputs the risk (MSE/2).
+    """Generate the theoretical solution to momentum.
+    Outputs TWICE the risk. The minibatch loss has a 1/batch term. 
 
     Parameters
     ----------
@@ -43,7 +43,7 @@ def ode_resolvent_log_implicit(
             initialization of sigma's (xi^2_j)
         risk_infinity : scalar
             represents the risk value at time infinity (note:
-            risk=MSE/2)
+            this is NOT twice the risk)
 
     opt_hparams : optimizer hyperparameters for Dana
         g1, g2, g3 : function(time)
@@ -70,10 +70,10 @@ def ode_resolvent_log_implicit(
     g1, g2, g3, delta = opt_hparams.g1, opt_hparams.g2, opt_hparams.g3, opt_hparams.delta
     eigs_K = inputs.eigs_K
     rho_init, chi_init, sigma_init = inputs.rho_init, inputs.chi_init, inputs.sigma_init
-    MSE_infinity = 2.0*inputs.risk_infinity
+    twice_risk_infinity = 2.0*inputs.risk_infinity
     times = jnp.arange(0, jnp.log(t_max), step=dt, dtype=jnp.float32)
-    MSE_init = MSE_infinity + jnp.sum(inputs.eigs_K * inputs.rho_init)
-    
+    risk_init = twice_risk_infinity + jnp.sum(inputs.eigs_K * inputs.rho_init)
+
 
     def inverse_3x3(omega):
         # Extract matrix elements
@@ -106,58 +106,67 @@ def ode_resolvent_log_implicit(
         return jnp.array(inv)
 
     def omega_full(time_plus):
-        omega_11 = -2.0 * batch * g2(time_plus) * eigs_K + batch * (batch + 1.0) * g2(time_plus)**2 * eigs_K**2
-        omega_12 = g3(time_plus)**2 * jnp.ones_like(eigs_K)
-        omega_13 = 2.0 * g3(time_plus) * (-1.0 + g2(time_plus) * batch * eigs_K)
+        omega_11 = -2.0 * ( g2(time_plus) + g1(time_plus) * g3(time_plus) ) * eigs_K + ( batch * (batch + 1.0) ) / ( batch**2 ) * ( g2(time_plus)**2 + 2.0 * g1(time_plus) * g3(time_plus) * g2(time_plus) + g1(time_plus)**2 * g3(time_plus)**2 ) * eigs_K**2
+        omega_12 = g3(time_plus)**2 * (1.0 - delta(time_plus))**2 * jnp.ones_like(eigs_K)
+        omega_13 = -2.0 * g3(time_plus) * (1.0 - delta(time_plus)) + 2.0 * (g2(time_plus) * g3(time_plus) + g3(time_plus)**2 * g1(time_plus)) * (1.0 - delta(time_plus) ) *  eigs_K #(-1.0 + g2(time_plus) * batch * eigs_K)
         omega_1 = jnp.array([omega_11, omega_12, omega_13])
 
-        omega_21 = batch * (batch + 1.0) * g1(time_plus)**2 * eigs_K**2
+        omega_21 = ( batch * (batch + 1.0) ) / (batch**2) * g1(time_plus)**2 * eigs_K**2
         omega_22 = (-2.0 * delta(time_plus) + delta(time_plus)**2) * jnp.ones_like(eigs_K)
-        omega_23 = 2.0 * g1(time_plus) * eigs_K * batch * (1.0 - delta(time_plus))
+        omega_23 = 2.0 * g1(time_plus) * eigs_K * (1.0 - delta(time_plus))
         omega_2 = jnp.array([omega_21, omega_22, omega_23])
 
-        omega_31 = g1(time_plus) * batch * eigs_K
-        omega_32 = -g3(time_plus) * jnp.ones_like(eigs_K)
-        omega_33 = -delta(time_plus) - g2(time_plus) * batch * eigs_K
+        omega_31 = g1(time_plus) * eigs_K - ( batch * (batch + 1.0) ) / ( batch**2 ) * eigs_K**2 * ( g1(time_plus) * g2(time_plus) + g1(time_plus)**2 * g3(time_plus) )
+        omega_32 = (-g3(time_plus) + g3(time_plus) * delta(time_plus) * (2.0 - delta(time_plus)) ) * jnp.ones_like(eigs_K)
+        omega_33 = -delta(time_plus) - ( g2(time_plus) - g2(time_plus) * delta(time_plus) + 2.0 * ( 1.0 - delta(time_plus) )* g1(time_plus) * g3(time_plus) ) * eigs_K
         omega_3 = jnp.array([omega_31, omega_32, omega_33])
 
         omega = jnp.array([omega_1, omega_2, omega_3])  # 3 x 3 x d
         return omega
 
     def omega_approximate(time_plus):
-        omega11 = -2.0 * batch * g2(time_plus) * eigs_K
+        omega11 = -2.0 * g2(time_plus) * eigs_K
         omega12 = 0.0 * jnp.ones_like(eigs_K)
         omega13 = 2.0 * g3(time_plus) * -1.0 * jnp.ones_like(eigs_K)
         omega1 = jnp.array([omega11, omega12, omega13])
 
         omega21 = 0.0 * jnp.ones_like(eigs_K)
         omega22 = (-2.0 * delta(time_plus)) * jnp.ones_like(eigs_K)
-        omega23 = 2.0 * g1(time_plus) * eigs_K * batch
+        omega23 = 2.0 * g1(time_plus) * eigs_K
         omega2 = jnp.array([omega21, omega22, omega23])
 
-        omega31 = g1(time_plus) * batch * eigs_K
+        omega31 = g1(time_plus) * eigs_K
         omega32 = -g3(time_plus) * jnp.ones_like(eigs_K)
-        omega33 = -delta(time_plus) - g2(time_plus) * batch * eigs_K
+        omega33 = -delta(time_plus) - g2(time_plus) * eigs_K
         omega3 = jnp.array([omega31, omega32, omega33])
 
         omega = jnp.array([omega1, omega2, omega3]) #3 x 3 x d
         return omega
 
+    def forcing_term(time_plus):
+      Gamma = jnp.array([( opt_hparams.g2(time_plus)**2 + 2.0 * g1(time_plus) * g2(time_plus) * g3(time_plus) + g1(time_plus)**2 * g3(time_plus)**2 ) / batch,
+                          opt_hparams.g1(time_plus)**2 / batch, (-g1(time_plus) * g2(time_plus) - g1(time_plus)**2 * g3(time_plus)) / batch])
+      return jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
+    def forcing_term_approximate(time_plus):
+      Gamma = jnp.array([g2(time_plus)**2 / batch,
+                           g1(time_plus)**2 / batch, 0.0])
+      return jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
 
     def ode_update(carry, time):
-        v, MSE = carry
+        v, twice_risk = carry
         time_plus = jnp.exp(time + dt)
         omega = omega_approximate(time_plus) if approximate else omega_full(time_plus)
         identity = jnp.tensordot(jnp.eye(3), jnp.ones(D), 0)
 
         A = inverse_3x3(identity - (dt * time_plus) * omega)  # 3 x 3 x d
 
-        Gamma = jnp.array([batch * opt_hparams.g2(time_plus)**2,
-                           batch * opt_hparams.g1(time_plus)**2, 0.0])
+        #Gamma = jnp.array([batch * opt_hparams.g2(time_plus)**2,
+        #                   batch * opt_hparams.g1(time_plus)**2, 0.0])
         z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), eigs_K)
-        G_lambda = jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
+        #G_lambda = jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
 
-        x_temp = v + dt * time_plus * MSE_infinity * G_lambda
+        G_lambda = forcing_term_approximate(time_plus) if approximate else forcing_term(time_plus)
+        x_temp = v + dt * time_plus * twice_risk_infinity * G_lambda
 
         x = jnp.einsum('ijk, jk -> ik', A, x_temp)
 
@@ -166,9 +175,9 @@ def ode_resolvent_log_implicit(
         v_new = x + (dt * time_plus * y * jnp.sum(x * z) /
                     (1.0 - dt * time_plus * jnp.sum(y * z)))
 
-        MSE_new = MSE_infinity + jnp.sum(eigs_K * v_new[0])
-        return (v_new, MSE_new), MSE_new
+        twice_risk_new = twice_risk_infinity + jnp.sum(eigs_K * v_new[0])
+        return (v_new, twice_risk_new), twice_risk
 
-    init_carry = (jnp.array([rho_init, sigma_init, chi_init]), MSE_init)
-    _, MSE = jax.lax.scan(ode_update, init_carry, times)
-    return jnp.exp(times), MSE/2.0 # MSE/2.0 is the risk
+    init_carry = (jnp.array([rho_init, sigma_init, chi_init]), risk_init)
+    _, twice_risks = jax.lax.scan(ode_update, init_carry, times)
+    return jnp.exp(times), twice_risks
