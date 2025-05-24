@@ -15,7 +15,7 @@ def powerlaw_schedule(
     init_value: chex.Scalar,
     saturation_value: chex.Scalar,
     power: chex.Scalar,
-    time_scale: int,
+    time_scale: chex.Scalar,
 ) -> base.Schedule:
   """Constructs power-law schedule.
 
