@@ -28,7 +28,7 @@ def ode_resolvent_log_implicit(
     approximate = False,
 ):
     """Generate the theoretical solution to momentum.
-    Outputs TWICE the risk. The minibatch loss has a 1/batch term. 
+    Outputs TWICE the risk.
 
     Parameters
     ----------
@@ -155,7 +155,8 @@ def ode_resolvent_log_implicit(
     def ode_update(carry, time):
         v, twice_risk = carry
         time_plus = jnp.exp(time + dt)
-        omega = omega_approximate(time_plus) if approximate else omega_full(time_plus)
+        time_plus_minus_one = time_plus - 1.0
+        omega = omega_approximate(time_plus_minus_one) if approximate else omega_full(time_plus_minus_one)
         identity = jnp.tensordot(jnp.eye(3), jnp.ones(D), 0)
 
         A = inverse_3x3(identity - (dt * time_plus) * omega)  # 3 x 3 x d
@@ -165,7 +166,7 @@ def ode_resolvent_log_implicit(
         z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), eigs_K)
         #G_lambda = jnp.einsum('i,j->ij', Gamma, inputs.eigs_K)  # 3 x d
 
-        G_lambda = forcing_term_approximate(time_plus) if approximate else forcing_term(time_plus)
+        G_lambda = forcing_term_approximate(time_plus_minus_one) if approximate else forcing_term(time_plus_minus_one)
         x_temp = v + dt * time_plus * twice_risk_infinity * G_lambda
 
         x = jnp.einsum('ijk, jk -> ik', A, x_temp)
@@ -180,4 +181,4 @@ def ode_resolvent_log_implicit(
 
     init_carry = (jnp.array([rho_init, sigma_init, chi_init]), risk_init)
     _, twice_risks = jax.lax.scan(ode_update, init_carry, times)
-    return jnp.exp(times), twice_risks
+    return jnp.exp(times)-1.0, twice_risks
