@@ -211,3 +211,244 @@ class PowerLawRF:
     """
     v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
     return deterministic_rho_weights(v, d, alpha, beta, a, b, f_measure_fn, xs_per_split)
+
+########################################################
+# Mixed Power-law random features regression class
+# Generalization with multiple experts
+########################################################
+
+class MPowerLawRF:
+  """
+  A class that generates mixed power-law random features regression problems with multiple experts.
+
+  This class creates synthetic regression problems with power-law decaying eigenvalues 
+  and target coefficients, but with multiple experts that are selected according to 
+  a power-law probability distribution.
+
+  Attributes:
+      alpha (float): Power law exponent for eigenvalue decay
+      beta (float): Power law exponent for target coefficient decay  
+      zeta (float): Power law exponent for expert selection probability
+      m (int): Number of experts
+      W (ndarray): Random features matrix of shape (v, d)
+      v (int): Hidden dimensionality
+      d (int): Embedded dimensionality
+      x_grid (ndarray): Grid of indices from 1 to v, shape (1,v)
+      population_eigenvalues (ndarray): Power-law decaying eigenvalues
+      b (ndarray): Power-law decaying target coefficients
+      population_trace (float): Sum of population eigenvalues
+      checkW (ndarray): Scaled random features matrix
+      checkb (ndarray): Scaled target coefficients
+      expert_probs (ndarray): Probability distribution over experts
+  """
+
+  def __init__(self, alpha, beta, zeta, m, W):
+      self.alpha = alpha
+      self.beta = beta
+      self.zeta = zeta
+      self.m = m
+      self.W = W
+      self.v = self.W.shape[0]
+      self.d = self.W.shape[1]
+      self.x_grid=jnp.arange(1, self.v+1).reshape(1,self.v)
+      self.population_eigenvalues = self.x_grid**(-self.alpha)
+      self.b = self.x_grid.transpose()**(-beta)
+      self.population_trace = jnp.sum(self.population_eigenvalues**2)
+      self.checkW = W * self.population_eigenvalues.T
+      self.checkb = self.x_grid.transpose()**(-alpha-beta)
+      
+      # Expert probabilities: Pr(J = j) ∝ j^{-zeta}
+      expert_weights = jnp.arange(1, m+1)**(-zeta)
+      self.expert_probs = expert_weights / jnp.sum(expert_weights)
+      
+  @classmethod
+  def initialize_random(cls, alpha, beta, zeta, m, v, d, key):
+      """
+      Creates a new MPowerLawRF instance with randomly initialized features.
+
+      Args:
+          alpha (float): Power law exponent for eigenvalue decay
+          beta (float): Power law exponent for target coefficient decay
+          zeta (float): Power law exponent for expert selection probability
+          m (int): Number of experts
+          v (int): Hidden dimensionality
+          d (int): Embedded dimensionality
+          key (PRNGKey): JAX random number generator key
+
+      Returns:
+          MPowerLawRF: A new instance with randomly sampled features matrix W
+                       scaled to have variance 1/d
+      """
+      # Sample random features matrix with variance 1/d
+      W = random.normal(key, (v, d)) / jnp.sqrt(d)
+      return cls(alpha=alpha, beta=beta, zeta=zeta, m=m, W=W)
+  
+  def get_population_risk(self, weights):
+      """
+      Calculates the population risk for given weights across all experts.
+      
+      The population risk is the expected squared error over the data distribution,
+      weighted by expert selection probabilities.
+
+      RISK is defined as the MSE/2.0
+      
+      Args:
+          weights (ndarray): Weight matrix of shape (m, d) where each row is weights for an expert
+      
+      Returns:
+          float: Population risk value
+      """
+      total_risk = 0.0
+      checkb_flat = self.checkb.squeeze()  # Ensure checkb is 1D
+      # Project weights onto random features for all experts at once
+      proj = jnp.matmul(self.checkW, weights.T)  # Shape: (v, m)
+      
+      # Calculate risk for all experts at once
+      risk = jnp.sum((proj - checkb_flat[:, None])**2, axis=0) / 2  # Shape: (m,)
+      
+      # Add weighted risk for all experts
+      total_risk = jnp.sum(self.expert_probs * risk)
+    #   for j in range(self.m):
+    #       # Project weights onto random features for expert j
+    #       proj = jnp.matmul(self.checkW, weights[j])
+          
+    #       # Calculate risk for expert j
+    #       risk_j = jnp.sum((proj - checkb_flat)**2) / 2
+          
+    #       # Add weighted risk
+    #       total_risk += self.expert_probs[j] * risk_j
+          
+      return total_risk
+  
+  def get_hessian_spectra(self):
+    """Get eigenvalues of the Hessian matrix of the problem
+
+    Returns
+    -------
+    ndarray
+        Array containing the eigenvalues of the Hessian matrix, computed as 
+        the squared singular values of the checkW matrix.
+    """
+    _, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
+    return s**2
+  
+  def get_rhos(self):
+    """Get squared-projections of the residual (b) in the direction of the eigenmodes of the Hessian.
+
+    Returns
+    -------
+    ndarray
+        Array containing the squared-projections of the residual vector b onto the eigenvectors
+        of the Hessian matrix, normalized by the corresponding eigenvalues.
+    """
+    Uvec, s, _ =jnp.linalg.svd(self.checkW,full_matrices=False)
+
+    #Compute < ( D^1/2 W W^T D^(1/2) - z)^{-1}, D^(1/2) b >
+    check_beta_weight = jnp.tensordot(self.checkb,Uvec,axes=[[0],[0]])[0]
+
+    rhos = (check_beta_weight)**2 / s**2
+    rhos.astype(jnp.float32)
+    return rhos
+
+  def get_data(self, key, batch):
+      """
+      Generates a batch of synthetic data points with expert assignments.
+      
+      Args:
+          key (PRNGKey): JAX random number generator key
+          batch (int): Number of data points to generate
+          
+      Returns:
+          tuple: (X, y, J) where:
+              X (ndarray): Input features of shape (batch, d)
+              y (ndarray): Target values of shape (batch, 1) - same for all experts
+              J (ndarray): Expert assignments of shape (batch,) with values in {0, 1, ..., m-1}
+      """
+      key1, key2 = random.split(key)
+      
+      # Generate random features
+      x = random.normal(key1, (batch, self.v))
+      X = jnp.matmul(x, self.checkW)
+      y = jnp.matmul(x, self.checkb)
+      
+      # Sample expert assignments
+      J = random.categorical(key2, jnp.log(self.expert_probs), shape=(batch,))
+      
+      return X, y, J
+  
+  def get_theory_limit_loss(self):
+      """Returns the theoretical limit of the loss (residual risk) for the current model parameters.
+      
+      Calculates the theoretical prediction for the residual risk level (risk at infinite time)
+      using the model's alpha, beta, v (number of random features), and d (input dimension) parameters.
+      
+      Returns:
+          float: Theoretical prediction for the residual risk level
+      """
+      return theory_limit_loss(self.alpha,self.beta,self.v,self.d)
+  
+  def get_empirical_limit_loss(self):
+    """Returns the empirical limit of the loss (residual risk) for the current model parameters.
+    
+    Calculates the empirical prediction for the residual risk level (risk at infinite time)
+    using the model's alpha, beta, v (number of random features), and d (input dimension) parameters.
+    
+    Returns:
+        float: Empirical prediction for the residual risk level
+    """
+    # Using the normal equation: (W^T W)w = W^T b for each expert
+    W_T_W = jnp.matmul(self.checkW.T, self.checkW)
+    W_T_b = jnp.matmul(self.checkW.T, self.checkb.squeeze())  # Ensure checkb is 1D
+    
+    # Solve the linear system for all experts (same solution for each)
+    w = jnp.linalg.solve(W_T_W, W_T_b)
+    
+    # Create weight matrix with same weights for all experts
+    weights = jnp.tile(w[None, :], (self.m, 1))
+    
+    actual_risk = self.get_population_risk(weights)
+
+    return actual_risk
+    
+  
+  def get_theory_rhos(self):
+    """Get the theoretical rhos for the current model parameters.
+
+    Returns
+    -------
+    ndarray,ndarray
+        The first array contains (approximate) eigenvalues 
+        of the Hessian, and the second contains the 
+        corresponding rhos.  These are chosen to be a good
+        approximation of the true eigenvalues and rhos, in
+        in the sense of a inducing similar measures. In
+        particular, the eigenvalues do not need to match 
+        well for large index.
+    """
+    return theory_rhos(self.alpha,self.beta,self.d)
+
+  def get_deterministic_rho_weights(self, a, b, xs_per_split=None, f_measure_fn=theory_f_measure):
+    """Generate the initial rho_j's deterministically (via self-consistent theory)
+    This performs many small contour integrals each surrounding the real eigenvalues
+    where the vector a contains the values for the lower (left) edges of the
+    contours and the vector b contains the values of the upper (right) edges of the
+    contours.
+    
+    Parameters
+    ----------
+    a : array
+        Lower (left) edges of the contours
+    b : array
+        Upper (right) edges of the contours
+    xs_per_split : int, optional
+        Number of x values to use per split, default is 10000
+    f_measure_fn : function, optional
+        Function to compute the measure, default is theory_f_measure
+        
+    Returns
+    -------
+    array
+        rho_j weights in order of largest j^{-2alpha} to smallest j^{-2alpha}
+    """
+    v, d, alpha, beta = self.v, self.d, self.alpha, self.beta
+    return deterministic_rho_weights(v, d, alpha, beta, a, b, f_measure_fn, xs_per_split)
