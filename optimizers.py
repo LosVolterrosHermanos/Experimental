@@ -174,7 +174,7 @@ def adana_optimizer(
             is_leaf=lambda x: x is None,
         )
         new_tau = jax.tree.map(
-            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u)/jnp.sqrt(v+u**2+epsilon),
+            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u)/(jnp.sqrt(v+u**2)+epsilon),
             state.tau,
             updates,
             new_v,
@@ -183,7 +183,7 @@ def adana_optimizer(
         newg2 = g2(new_tau*state.count)
         newg3 = g3(new_tau*state.count)
         updates = jax.tree.map(
-            lambda m,u,v,tau : -1.0*newg2*u if m is None else -1.0*(newg2*u + newg3*m)*jnp.sqrt(tau/(v+epsilon)),
+            lambda m,u,v,tau : -1.0*newg2*u if m is None else -1.0*(newg2*u + newg3*m)*jnp.sqrt(tau)/(jnp.sqrt(v)+epsilon),
             new_m,
             updates,
             new_v,

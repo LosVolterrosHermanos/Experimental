@@ -54,8 +54,8 @@ for D in tqdm(D_VALUES, desc="Processing dimensions"):
     #(2α+2β−1)/(2α) 
     #MAGIC = ((2*problem.alpha+2*problem.beta-1)/(2*problem.alpha))*(2.0-1.0/(2*problem.alpha))
     #adam_powerlaw_schedule = optimizers.powerlaw_schedule(INITIAL_LR, 0.0, -MAGIC/2.0, 1)
-    g2_adana = optimizers.powerlaw_schedule(INITIAL_LR*G2_SCALE, 0.0, 0.0, 1)
-    g3_adana = optimizers.powerlaw_schedule(INITIAL_LR*G3_IV, 0.0, -1.0/(2*problem.alpha), 1)
+    g2_adana = optimizers.powerlaw_schedule(INITIAL_LR*G2_SCALE, 0.0, -MAGIC/2.0, 1)
+    g3_adana = optimizers.powerlaw_schedule(INITIAL_LR*G3_IV, 0.0, -MAGIC/2.0-1.0/(2*problem.alpha), 1)
     Delta_adana = optimizers.powerlaw_schedule(1.0, 0.0, -1.0, 6.0)
     
     adana_opt = optimizers.adana_optimizer(g2=g2_adana, g3=g3_adana, Delta=Delta_adana)
