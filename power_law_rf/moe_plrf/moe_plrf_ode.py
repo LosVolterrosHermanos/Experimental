@@ -96,11 +96,11 @@ def ode_moe_dana_log_implicit(
     def get_normalization_factors(grad_norm):
         """Compute normalization factors based on adaptive optimizer type."""
         if adaptive == 'adam':
-            return 1.0, grad_norm
+            return jnp.ones_like(grad_norm), grad_norm
         elif adaptive == 'rmsprop_dana':
-            return grad_norm, 1.0
+            return grad_norm, jnp.ones_like(grad_norm)
         else:
-            return 1.0, 1.0
+            return jnp.ones_like(grad_norm), jnp.ones_like(grad_norm)
 
     def inverse_3x3(omega):
         """Vectorized inverse for shape (m, 3, 3, D) -> (m, 3, 3, D)"""
@@ -134,53 +134,54 @@ def ode_moe_dana_log_implicit(
         # Get normalization factors for each expert
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
-        # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all[:, None]  # shape (m, 1)
+        # Normalize hyperparameters - keep as shape (m,)
+        g1 = g1_fn(time_plus) / g1_norm_all  # shape (m,)
         g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all[:, None]  # shape (m, 1)
+        g3 = g3_fn(time_plus) / g3_norm_all  # shape (m,)
         delta = delta_fn(time_plus)
         
-        # Broadcast expert_probs to shape (m, 1) for easier operations
-        p = expert_probs[:, None]  # shape (m, 1)
+        # Keep expert_probs as shape (m,)
+        p = expert_probs  # shape (m,)
         
-        # Broadcast eigs_K to shape (1, D) -> operations will broadcast to (m, D)
-        eigs = eigs_K[None, :]  # shape (1, D)
+        # Keep eigs_K as shape (D,)
+        eigs = eigs_K  # shape (D,)
         
         omega_all = jnp.zeros((m, 3, 3, D))
         
         # Row 1: Evolution of rho
+        # Broadcasting: (m,) * (D,) -> (m, D)
         omega_all = omega_all.at[:, 0, 0].set(
-            -2.0 * p * (g2 + g1 * g3) * eigs + 
-            p * ((batch + 1.0) / batch) * (g2**2 + 2.0 * g1 * g3 * g2 + g1**2 * g3**2) * eigs**2
+            -2.0 * p[:, None] * (g2 + g1[:, None] * g3[:, None]) * eigs[None, :] + 
+            p[:, None] * ((batch + 1.0) / batch) * (g2**2 + 2.0 * g1[:, None] * g3[:, None] * g2 + g1[:, None]**2 * g3[:, None]**2) * eigs[None, :]**2
         )
         omega_all = omega_all.at[:, 0, 1].set(
-            g3**2 * (1.0 - delta)**2 * jnp.ones((m, D))
+            g3[:, None]**2 * (1.0 - delta)**2 * jnp.ones((m, D))
         )
         omega_all = omega_all.at[:, 0, 2].set(
-            -2.0 * g3 * (1.0 - delta) + 
-            2.0 * p * (g2 * g3 + g3**2 * g1) * (1.0 - delta) * eigs
+            -2.0 * g3[:, None] * (1.0 - delta) + 
+            2.0 * p[:, None] * (g2 * g3[:, None] + g3[:, None]**2 * g1[:, None]) * (1.0 - delta) * eigs[None, :]
         )
         
         # Row 2: Evolution of sigma
         omega_all = omega_all.at[:, 1, 0].set(
-            p * ((batch + 1.0) / batch) * g1**2 * eigs**2
+            p[:, None] * ((batch + 1.0) / batch) * g1[:, None]**2 * eigs[None, :]**2
         )
         omega_all = omega_all.at[:, 1, 1].set(
             (-2.0 * delta + delta**2) * jnp.ones((m, D))
         )
         omega_all = omega_all.at[:, 1, 2].set(
-            2.0 * p * g1 * eigs * (1.0 - delta)
+            2.0 * p[:, None] * g1[:, None] * eigs[None, :] * (1.0 - delta)
         )
         
         # Row 3: Evolution of chi
         omega_all = omega_all.at[:, 2, 0].set(
-            p * g1 * eigs - p * ((batch + 1.0) / batch) * eigs**2 * (g1 * g2 + g1**2 * g3)
+            p[:, None] * g1[:, None] * eigs[None, :] - p[:, None] * ((batch + 1.0) / batch) * eigs[None, :]**2 * (g1[:, None] * g2 + g1[:, None]**2 * g3[:, None])
         )
         omega_all = omega_all.at[:, 2, 1].set(
-            (-g3 + g3 * delta * (2.0 - delta)) * jnp.ones((m, D))
+            (-g3[:, None] + g3[:, None] * delta * (2.0 - delta)) * jnp.ones((m, D))
         )
         omega_all = omega_all.at[:, 2, 2].set(
-            -delta - p * (g2 - g2 * delta + 2.0 * (1.0 - delta) * g1 * g3) * eigs
+            -delta - p[:, None] * (g2 - g2 * delta + 2.0 * (1.0 - delta) * g1[:, None] * g3[:, None]) * eigs[None, :]
         )
         
         return omega_all
@@ -190,28 +191,28 @@ def ode_moe_dana_log_implicit(
         # Get normalization factors for each expert
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
-        # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all[:, None]
+        # Normalize hyperparameters - keep as shape (m,)
+        g1 = g1_fn(time_plus) / g1_norm_all  # shape (m,)
         g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all[:, None]
+        g3 = g3_fn(time_plus) / g3_norm_all  # shape (m,)
         delta = delta_fn(time_plus)
         
-        p = expert_probs[:, None]
-        eigs = eigs_K[None, :]
+        p = expert_probs  # shape (m,)
+        eigs = eigs_K  # shape (D,)
         
         omega_all = jnp.zeros((m, 3, 3, D))
         
-        omega_all = omega_all.at[:, 0, 0].set(-2.0 * p * g2 * eigs)
+        omega_all = omega_all.at[:, 0, 0].set(-2.0 * p[:, None] * g2 * eigs[None, :])
         omega_all = omega_all.at[:, 0, 1].set(jnp.zeros((m, D)))
-        omega_all = omega_all.at[:, 0, 2].set(-2.0 * g3 * jnp.ones((m, D)))
+        omega_all = omega_all.at[:, 0, 2].set(-2.0 * g3[:, None] * jnp.ones((m, D)))
         
         omega_all = omega_all.at[:, 1, 0].set(jnp.zeros((m, D)))
         omega_all = omega_all.at[:, 1, 1].set(-2.0 * delta * jnp.ones((m, D)))
-        omega_all = omega_all.at[:, 1, 2].set(2.0 * p * g1 * eigs)
+        omega_all = omega_all.at[:, 1, 2].set(2.0 * p[:, None] * g1[:, None] * eigs[None, :])
         
-        omega_all = omega_all.at[:, 2, 0].set(p * g1 * eigs)
-        omega_all = omega_all.at[:, 2, 1].set(-g3 * jnp.ones((m, D)))
-        omega_all = omega_all.at[:, 2, 2].set(-delta - p * g2 * eigs)
+        omega_all = omega_all.at[:, 2, 0].set(p[:, None] * g1[:, None] * eigs[None, :])
+        omega_all = omega_all.at[:, 2, 1].set(-g3[:, None] * jnp.ones((m, D)))
+        omega_all = omega_all.at[:, 2, 2].set(-delta - p[:, None] * g2 * eigs[None, :])
         
         return omega_all
 
@@ -221,11 +222,11 @@ def ode_moe_dana_log_implicit(
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
         # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all[:, None]
+        g1 = g1_fn(time_plus) / g1_norm_all  # Remove [:, None] to keep shape (m,)
         g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all[:, None]
+        g3 = g3_fn(time_plus) / g3_norm_all  # Remove [:, None] to keep shape (m,)
         
-        p = expert_probs[:, None]  # shape (m, 1)
+        p = expert_probs  # Keep shape (m,) instead of (m, 1)
         
         gamma_all = jnp.stack([
             p * (g2**2 + 2.0 * g1 * g2 * g3 + g1**2 * g3**2) / batch,
@@ -242,10 +243,10 @@ def ode_moe_dana_log_implicit(
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
         # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all[:, None]
+        g1 = g1_fn(time_plus) / g1_norm_all  # Remove [:, None] to keep shape (m,)
         g2 = g2_fn(time_plus)
         
-        p = expert_probs[:, None]
+        p = expert_probs  # Keep shape (m,) instead of (m, 1)
         
         gamma_all = jnp.stack([
             p * g2**2 / batch,
