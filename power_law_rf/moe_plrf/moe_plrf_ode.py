@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple, Callable, Union, Optional, Literal
+from power_law_rf.ode import DanaHparams
 
 
 class MoEODEInputs(NamedTuple):
