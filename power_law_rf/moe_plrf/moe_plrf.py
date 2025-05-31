@@ -209,7 +209,7 @@ class PLRFTrainer:
         return jnp.array(timestamps), jnp.array(losses)
 
 
- class MixtureOfExpertsPLRF(PowerLawRandomFeatures):
+class MixtureOfExpertsPLRF(PowerLawRandomFeatures):
     """Mixture of Experts extension of the Power-Law Random Features model.
 
     Each expert shares the same random features matrix W but has its own
