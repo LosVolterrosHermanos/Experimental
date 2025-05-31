@@ -213,8 +213,8 @@ def ode_resolvent_log_implicit(
         time_plus = jnp.exp(time + dt)
         time_plus_minus_one = time_plus - 1.0
         
-        # Use sqrt(risk) as proxy for gradient norm when adaptive is not None
-        grad_norm = jnp.sqrt(twice_risk / 2.0) if adaptive is not None else 1.0
+        # Use sqrt(twice_risk) as proxy for gradient norm when adaptive is not None
+        grad_norm = jnp.sqrt(twice_risk) if adaptive is not None else 1.0
         
         omega = omega_approximate(time_plus_minus_one, grad_norm) if approximate else omega_full(time_plus_minus_one, grad_norm)
         identity = jnp.tensordot(jnp.eye(3), jnp.ones(D), 0)
