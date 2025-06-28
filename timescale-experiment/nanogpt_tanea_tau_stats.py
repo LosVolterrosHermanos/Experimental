@@ -34,13 +34,12 @@ from flax import linen as nn
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
 
-LOG_STEPS_BASE = 1.01
+LOG_STEPS_BASE = 1.1
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-@jax.jit
 def compute_tau_order_statistics(tau_vector):
     """Compute order statistics for tau vector in a jittable way.
     
@@ -292,16 +291,20 @@ def parse_args():
     )
     # Add Tanea hyperparameters
     parser.add_argument(
-        "--tanea_g2", type=float, default=1.0,
+        "--tanea_g2", type=float, default=1E-4,
         help="Tanea G2 parameter"
     )
     parser.add_argument(
-        "--tanea_g3", type=float, default=0.1,
+        "--tanea_g3", type=float, default=1E-5,
         help="Tanea G3 parameter"
     )
     parser.add_argument(
         "--tanea_delta", type=float, default=8.0,
         help="Tanea Delta parameter"
+    )
+    parser.add_argument(
+        "--tanea_kappa", type=float, default=1.0,
+        help="Tanea Kappa parameter"
     )
     return parser.parse_args()
 
@@ -352,7 +355,8 @@ def main():
         "results_dir": args.results_dir,
         "tanea_g2": args.tanea_g2,
         "tanea_g3": args.tanea_g3,
-        "tanea_delta": args.tanea_delta
+        "tanea_delta": args.tanea_delta,
+        "tanea_kappa": args.tanea_kappa
     }
     
     # Create LOG_STEPS
@@ -364,9 +368,9 @@ def main():
     
     # Initialize Tanea optimizer
     g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
-    g3 = powerlaw_schedule(config["tanea_g3"], 0.0, 0.0, 1)
+    g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
     delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
-    tanea = tanea_optimizer(g2=g2, g3=g3, delta=delta)
+    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta)
     
     tanea = optax.chain(
         optax.clip_by_global_norm(config['grad_clip']),
