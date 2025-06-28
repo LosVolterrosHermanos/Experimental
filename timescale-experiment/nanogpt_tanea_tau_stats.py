@@ -71,16 +71,22 @@ def extract_tau_statistics(opt_state):
     """Extract tau statistics from TaneaOptimizerState.
     
     Args:
-        opt_state: TaneaOptimizerState containing tau tree
+        opt_state: Optimizer state (may be from optax.chain)
         
     Returns:
         Dictionary with tau statistics
     """
-    if not isinstance(opt_state, TaneaOptimizerState):
+    # Handle optax.chain optimizer - extract the Tanea state
+    tanea_state = opt_state
+    if hasattr(opt_state, '__len__') and len(opt_state) > 1:
+        # optax.chain creates a tuple: (clip_state, tanea_state)
+        tanea_state = opt_state[1]
+    
+    if not isinstance(tanea_state, TaneaOptimizerState):
         return {}
     
     # Flatten tau tree into a single vector
-    tau_leaves = jax.tree_util.tree_leaves(opt_state.tau)
+    tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
     tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
     
     # Compute order statistics
