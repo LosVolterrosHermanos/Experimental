@@ -134,87 +134,99 @@ def ode_moe_dana_log_implicit(
         # Get normalization factors for each expert
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
-        # Normalize hyperparameters - keep as shape (m,)
-        g1 = g1_fn(time_plus) / g1_norm_all  # shape (m,)
-        g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all  # shape (m,)
-        delta = delta_fn(time_plus)
+        # Normalize hyperparameters and ensure consistent shapes
+        g1 = g1_fn(time_plus) / g1_norm_all[:, None]        # (m, 1) for broadcasting
+        g2 = g2_fn(time_plus) * jnp.ones((m, 1))            # (m, 1) for broadcasting
+        g3 = g3_fn(time_plus) / g3_norm_all[:, None]        # (m, 1) for broadcasting
+        delta = delta_fn(time_plus)                         # scalar
         
-        # Keep expert_probs as shape (m,)
-        p = expert_probs  # shape (m,)
+        # Broadcast everything to shape (m, D)
+        p = expert_probs[:, None]                            # (m, 1) -> broadcasts to (m, D)
+        eigs = eigs_K[None, :]                               # (1, D) -> broadcasts to (m, D)
+        ones = jnp.ones((m, D))                              # (m, D)
         
-        # Keep eigs_K as shape (D,)
-        eigs = eigs_K  # shape (D,)
+        # Compute MoE scaling factors
+        mean_gradient_scaling = p
+        second_moment_scaling = p * (2.0 - p + batch * p) / (batch + 1.0)
         
         omega_all = jnp.zeros((m, 3, 3, D))
         
         # Row 1: Evolution of rho
-        # Broadcasting: (m,) * (D,) -> (m, D)
         omega_all = omega_all.at[:, 0, 0].set(
-            -2.0 * p[:, None] * (g2 + g1[:, None] * g3[:, None]) * eigs[None, :] + 
-            p[:, None] * ((batch + 1.0) / batch) * (g2**2 + 2.0 * g1[:, None] * g3[:, None] * g2 + g1[:, None]**2 * g3[:, None]**2) * eigs[None, :]**2
+            -2.0 * mean_gradient_scaling * (g2 + g1 * g3) * eigs + 
+            second_moment_scaling * ((batch + 1.0) / batch) * (g2**2 + 2.0 * g1 * g3 * g2 + g1**2 * g3**2) * eigs**2
         )
         omega_all = omega_all.at[:, 0, 1].set(
-            g3[:, None]**2 * (1.0 - delta)**2 * jnp.ones((m, D))
+            g3**2 * (1.0 - delta)**2 * ones
         )
         omega_all = omega_all.at[:, 0, 2].set(
-            -2.0 * g3[:, None] * (1.0 - delta) + 
-            2.0 * p[:, None] * (g2 * g3[:, None] + g3[:, None]**2 * g1[:, None]) * (1.0 - delta) * eigs[None, :]
+            -2.0 * g3 * (1.0 - delta) * ones + 
+            2.0 * mean_gradient_scaling * (g2 * g3 + g3**2 * g1) * (1.0 - delta) * eigs
         )
         
         # Row 2: Evolution of sigma
         omega_all = omega_all.at[:, 1, 0].set(
-            p[:, None] * ((batch + 1.0) / batch) * g1[:, None]**2 * eigs[None, :]**2
+            second_moment_scaling * ((batch + 1.0) / batch) * g1**2 * eigs**2
         )
         omega_all = omega_all.at[:, 1, 1].set(
-            (-2.0 * delta + delta**2) * jnp.ones((m, D))
+            (-2.0 * delta + delta**2) * ones
         )
         omega_all = omega_all.at[:, 1, 2].set(
-            2.0 * p[:, None] * g1[:, None] * eigs[None, :] * (1.0 - delta)
+            2.0 * mean_gradient_scaling * g1 * eigs * (1.0 - delta) * ones
         )
         
         # Row 3: Evolution of chi
         omega_all = omega_all.at[:, 2, 0].set(
-            p[:, None] * g1[:, None] * eigs[None, :] - p[:, None] * ((batch + 1.0) / batch) * eigs[None, :]**2 * (g1[:, None] * g2 + g1[:, None]**2 * g3[:, None])
+            mean_gradient_scaling * g1 * eigs - 
+            second_moment_scaling * ((batch + 1.0) / batch) * eigs**2 * (g1 * g2 + g1**2 * g3)
         )
         omega_all = omega_all.at[:, 2, 1].set(
-            (-g3[:, None] + g3[:, None] * delta * (2.0 - delta)) * jnp.ones((m, D))
+            (-g3 + g3 * delta * (2.0 - delta)) * ones
         )
         omega_all = omega_all.at[:, 2, 2].set(
-            -delta - p[:, None] * (g2 - g2 * delta + 2.0 * (1.0 - delta) * g1[:, None] * g3[:, None]) * eigs[None, :]
+            -delta * ones - 
+            mean_gradient_scaling * (g2 - g2 * delta + 2.0 * (1.0 - delta) * g1 * g3) * eigs
         )
         
         return omega_all
+
 
     def omega_approximate_all(time_plus, grad_norm_all):
         """Compute approximate omega for all experts - shape (m, 3, 3, D)"""
         # Get normalization factors for each expert
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
-        # Normalize hyperparameters - keep as shape (m,)
-        g1 = g1_fn(time_plus) / g1_norm_all  # shape (m,)
-        g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all  # shape (m,)
-        delta = delta_fn(time_plus)
+        # Normalize hyperparameters and ensure consistent shapes
+        g1 = g1_fn(time_plus) / g1_norm_all[:, None]        # (m, 1) for broadcasting
+        g2 = g2_fn(time_plus) * jnp.ones((m, 1))            # (m, 1) for broadcasting
+        g3 = g3_fn(time_plus) / g3_norm_all[:, None]        # (m, 1) for broadcasting
+        delta = delta_fn(time_plus)                         # scalar
         
-        p = expert_probs  # shape (m,)
-        eigs = eigs_K  # shape (D,)
+        # Broadcast for cleaner expressions
+        p = expert_probs[:, None]                            # (m, 1)
+        eigs = eigs_K[None, :]                               # (1, D)
+        ones = jnp.ones((m, D))                              # (m, D)
+        zeros = jnp.zeros((m, D))                            # (m, D)
+        
+        # MoE scaling
+        mean_gradient_scaling = p
         
         omega_all = jnp.zeros((m, 3, 3, D))
         
-        omega_all = omega_all.at[:, 0, 0].set(-2.0 * p[:, None] * g2 * eigs[None, :])
-        omega_all = omega_all.at[:, 0, 1].set(jnp.zeros((m, D)))
-        omega_all = omega_all.at[:, 0, 2].set(-2.0 * g3[:, None] * jnp.ones((m, D)))
+        omega_all = omega_all.at[:, 0, 0].set(-2.0 * mean_gradient_scaling * g2 * eigs)
+        omega_all = omega_all.at[:, 0, 1].set(zeros)
+        omega_all = omega_all.at[:, 0, 2].set(-2.0 * g3 * ones)
         
-        omega_all = omega_all.at[:, 1, 0].set(jnp.zeros((m, D)))
-        omega_all = omega_all.at[:, 1, 1].set(-2.0 * delta * jnp.ones((m, D)))
-        omega_all = omega_all.at[:, 1, 2].set(2.0 * p[:, None] * g1[:, None] * eigs[None, :])
+        omega_all = omega_all.at[:, 1, 0].set(zeros)
+        omega_all = omega_all.at[:, 1, 1].set(-2.0 * delta * ones)
+        omega_all = omega_all.at[:, 1, 2].set(2.0 * mean_gradient_scaling * g1 * eigs * ones)
         
-        omega_all = omega_all.at[:, 2, 0].set(p[:, None] * g1[:, None] * eigs[None, :])
-        omega_all = omega_all.at[:, 2, 1].set(-g3[:, None] * jnp.ones((m, D)))
-        omega_all = omega_all.at[:, 2, 2].set(-delta - p[:, None] * g2 * eigs[None, :])
+        omega_all = omega_all.at[:, 2, 0].set(mean_gradient_scaling * g1 * eigs)
+        omega_all = omega_all.at[:, 2, 1].set(-g3 * ones)
+        omega_all = omega_all.at[:, 2, 2].set(-delta * ones - mean_gradient_scaling * g2 * eigs)
         
         return omega_all
+
 
     def forcing_term_all(time_plus, grad_norm_all):
         """Compute forcing term for all experts - shape (m, 3, D)"""
@@ -222,20 +234,22 @@ def ode_moe_dana_log_implicit(
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
         # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all  # Remove [:, None] to keep shape (m,)
-        g2 = g2_fn(time_plus)
-        g3 = g3_fn(time_plus) / g3_norm_all  # Remove [:, None] to keep shape (m,)
+        g1 = g1_fn(time_plus) / g1_norm_all                 # shape (m,)
+        g2 = g2_fn(time_plus) * jnp.ones(m)                 # shape (m,)
+        g3 = g3_fn(time_plus) / g3_norm_all                 # shape (m,)
         
-        p = expert_probs  # Keep shape (m,) instead of (m, 1)
+        # Gradient noise scaling: same as mean gradient scaling = p(i)
+        gradient_noise_scaling = expert_probs                # shape (m,)
         
         gamma_all = jnp.stack([
-            p * (g2**2 + 2.0 * g1 * g2 * g3 + g1**2 * g3**2) / batch,
-            p * g1**2 / batch,
-            p * (-g1 * g2 - g1**2 * g3) / batch
+            gradient_noise_scaling * (g2**2 + 2.0 * g1 * g2 * g3 + g1**2 * g3**2) / batch,
+            gradient_noise_scaling * g1**2 / batch,
+            gradient_noise_scaling * (-g1 * g2 - g1**2 * g3) / batch
         ], axis=1)  # shape (m, 3)
         
         # Broadcast with eigs_K: (m, 3, 1) * (1, 1, D) -> (m, 3, D)
         return gamma_all[:, :, None] * eigs_K[None, None, :]
+
 
     def forcing_term_approximate_all(time_plus, grad_norm_all):
         """Compute approximate forcing term for all experts - shape (m, 3, D)"""
@@ -243,17 +257,19 @@ def ode_moe_dana_log_implicit(
         g1_norm_all, g3_norm_all = get_normalization_factors(grad_norm_all)
         
         # Normalize hyperparameters
-        g1 = g1_fn(time_plus) / g1_norm_all  # Remove [:, None] to keep shape (m,)
-        g2 = g2_fn(time_plus)
+        g1 = g1_fn(time_plus) / g1_norm_all                 # shape (m,)
+        g2 = g2_fn(time_plus) * jnp.ones(m)                 # shape (m,)
         
-        p = expert_probs  # Keep shape (m,) instead of (m, 1)
+        # Gradient noise scaling: same as mean gradient scaling = p(i)
+        gradient_noise_scaling = expert_probs                # shape (m,)
         
         gamma_all = jnp.stack([
-            p * g2**2 / batch,
-            p * g1**2 / batch,
-            jnp.zeros_like(p)
+            gradient_noise_scaling * g2**2 / batch,
+            gradient_noise_scaling * g1**2 / batch,
+            jnp.zeros_like(gradient_noise_scaling)
         ], axis=1)  # shape (m, 3)
         
+        # Broadcast with eigs_K: (m, 3, 1) * (1, 1, D) -> (m, 3, D)
         return gamma_all[:, :, None] * eigs_K[None, None, :]
 
     def ode_update(carry, time):
@@ -265,7 +281,7 @@ def ode_moe_dana_log_implicit(
         v_all_transposed = jnp.transpose(v_all, (2, 0, 1))  # (m, 3, D)
         
         # Use sqrt(risk) as proxy for gradient norm when adaptive is not None
-        grad_norm_all = jnp.sqrt(twice_risk_all / 2.0) if adaptive is not None else jnp.ones(m)
+        grad_norm_all = jnp.sqrt(twice_risk_all) if adaptive is not None else jnp.ones(m)
         
         # Get omega for all experts - shape (m, 3, 3, D)
         omega_all = omega_approximate_all(time_plus_minus_one, grad_norm_all) if approximate else omega_full_all(time_plus_minus_one, grad_norm_all)
