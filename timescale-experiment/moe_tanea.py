@@ -42,7 +42,7 @@ key = random.PRNGKey(42)
 #@title Global Parameters
 # Model parameters
 ALPHA = 1.0
-BETA_LIST = [0.5, 0.8]#, 1.1, 1.4]
+BETA_LIST = [0.5, 0.8, 1.1, 1.4]
 # BETA_LIST = [0.8]
 # BETA = 0.8
 V = 2000  # Hidden dimension
@@ -54,7 +54,7 @@ ZETA = 0.9  # Power-law exponent for expert selection
 
 # Training parameters
 # BATCH_SIZE = 32
-STEPS = 10000
+STEPS = 1000000
 DT = 1e-3  # ODE time step
 
 # Learning rate schedules
@@ -105,7 +105,7 @@ def get_tarmsprop_sgd_hparams(alpha, beta, d, batch_size, g2_scale, traceK, tane
   return tanea_params
 
 def get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent):
-   return g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)*tanea_lr_scalar
+   return 0.355*g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)*tanea_lr_scalar
 
 traceK = get_traceK(ALPHA, V)
 
@@ -258,4 +258,11 @@ plt.title('MoE PLRF Training Loss Comparison')
 plt.legend(handles=legend_elements, loc='best')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
+
+# Create results directory if it doesn't exist
+import os
+os.makedirs('results', exist_ok=True)
+
+# Save the plot as PDF
+plt.savefig('results/moe_plrf_training_comparison.pdf', format='pdf', dpi=300, bbox_inches='tight')
 plt.show()
