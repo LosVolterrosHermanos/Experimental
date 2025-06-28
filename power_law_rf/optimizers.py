@@ -178,3 +178,83 @@ def dana_optimizer_layerwise(
 
     return base.GradientTransformation(init_fn, update_fn)
 
+
+
+class TaneaOptimizerState(NamedTuple):
+  """State for the Tanea algorithm."""
+  count: chex.Array  # shape=(), dtype=jnp.int32.
+  m: base.Updates
+  v: base.Updates
+  tau: base.Updates
+
+
+def tanea_optimizer(
+    g2: base.ScalarOrSchedule,
+    g3: base.ScalarOrSchedule,
+    Delta: base.ScalarOrSchedule,
+    epsilon: float = 1e-8,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+  ) -> base.GradientTransformation:
+    """Tanea optimizer.
+
+    Args:
+        g2: A scalar or schedule determining the second gradient coefficient.
+        g3: A scalar or schedule determining the third gradient coefficient.
+        Delta: A scalar or schedule determining the momentum decay rate.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator; if
+        `None` then the `dtype` is inferred from `params` and `updates`.
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    def init_fn(params):
+        m = otu.tree_zeros_like(params, dtype=y_dtype)  #First-Momentum
+        v = otu.tree_zeros_like(params, dtype=y_dtype)  #Second-Momentum
+        tau = otu.tree_zeros_like(params, dtype=y_dtype)  #Tau
+        return TaneaOptimizerState(count=jnp.zeros([], jnp.int32), m=m, v=v, tau=tau)
+
+    def update_fn(updates, state, params=None):
+        del params
+        newDelta = Delta(state.count)
+
+        new_m = jax.tree.map(
+            lambda m,u : None if m is None else m*(1-newDelta) + u,
+            state.m,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+        new_v = jax.tree.map(
+            lambda v,u : None if v is None else v*(1-newDelta) + newDelta*(u**2),
+            state.v,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+        new_tau = jax.tree.map(
+            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u)/(jnp.sqrt(v+u**2)+epsilon),
+            state.tau,
+            updates,
+            new_v,
+            is_leaf=lambda x: x is None,
+        )
+        newg2 = g2(new_tau*state.count)
+        newg3 = g3(new_tau*state.count)
+        updates = jax.tree.map(
+            lambda m,u,v,tau : -1.0*newg2*u if m is None else -1.0*(newg2*u + newg3*m)*jnp.sqrt(tau)/(jnp.sqrt(v)+epsilon),
+            new_m,
+            updates,
+            new_v,
+            new_tau,
+            is_leaf=lambda x: x is None,
+        )
+        new_m = otu.tree_cast(new_m, y_dtype)
+        new_v = otu.tree_cast(new_v, y_dtype)
+        new_tau = otu.tree_cast(new_tau, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, TaneaOptimizerState(count=count_inc, m=new_m, v=new_v, tau=new_tau)
+
+    return base.GradientTransformation(init_fn, update_fn)
