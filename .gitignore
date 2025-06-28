@@ -178,3 +178,5 @@ cython_debug/
 # ELLIOT-ADDED
 *.pdf 
 *.pkl
+timescale-experiment/tanea_tau.ipynb
+dana-nonquadratic-tests/gpt2/fineweb-edu
