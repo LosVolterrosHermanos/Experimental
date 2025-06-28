@@ -234,20 +234,24 @@ def tanea_optimizer(
             is_leaf=lambda x: x is None,
         )
         new_tau = jax.tree.map(
-            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u)/(jnp.sqrt(v+u**2)+epsilon),
+            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u*state.count)/(jnp.abs(u*state.count)+jnp.sqrt(v)+epsilon),
             state.tau,
             updates,
             new_v,
             is_leaf=lambda x: x is None,
         )
-        newg2 = g2(new_tau*state.count)
-        newg3 = g3(new_tau*state.count)
+        newg2 = g2(jnp.maximum(new_tau*state.count, 1.0))
+        newg3 = g3(jnp.maximum(new_tau*state.count, 1.0))
         updates = jax.tree.map(
-            lambda m,u,v,tau : -1.0*newg2*u if m is None else -1.0*(newg2*u + newg3*m)*jnp.sqrt(tau)/(jnp.sqrt(v)+epsilon),
+            lambda m,u,v,tau : -1.0*newg2*u if m is None else 
+            -1.0*(newg2*u)/(jnp.sqrt(v/tau)+epsilon)-(newg3*m*abs(u)/tau)/(u**2+v/tau+epsilon**2),
+            #lambda m,u,v,tau : -1.0*newg2*u if m is None else -1.0*(newg2*u + newg3*m)/(jnp.sqrt(v)+epsilon),
+            #-1.0*(newg2*u + newg3*m)/(jnp.sqrt(v/tau)+epsilon),
             new_m,
             updates,
             new_v,
-            new_tau,
+            #new_tau,
+            jnp.maximum(new_tau, 1.0/(1.0+state.count)),
             is_leaf=lambda x: x is None,
         )
         new_m = otu.tree_cast(new_m, y_dtype)
