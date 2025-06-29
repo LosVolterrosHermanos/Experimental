@@ -59,14 +59,14 @@ ZETA = 1.0  # Power-law exponent for expert selection
 STEPS = 1000
 DT = 1e-3  # ODE time step
 
-# Learning rate schedules
-BASE_LR = 0.01
-MOMENTUM = 0.9
+# # Learning rate schedules
+# BASE_LR = 0.01
+# MOMENTUM = 0.9
 
 G2_SCALE = 0.2
 G3_OVER_G2 = 0.1
-BATCH_SIZE = 1
-TANEA_LR_SCALAR = 1E-3
+BATCH_SIZE = 100
+TANEA_LR_SCALAR = 1E-2
 TANEA_GLOBAL_EXPONENT = 0.0
 
 

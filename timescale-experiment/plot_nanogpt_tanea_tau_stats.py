@@ -122,7 +122,8 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
             # Create title with model and optimizer parameters
             title = (f'NanoGPT Tanea Tau Statistics\n'
                     f'Params: {data["num_params"]:,}, '
-                    f'g2={config["tanea_g2"]}, g3={config["tanea_g3"]}, δ={config["tanea_delta"]}')
+                    f'g2={config["tanea_g2"]}, kappa={config["tanea_kappa"]}, tanea_g3={config["tanea_g3"]}\n'
+                    f'wd={config["weight_decay"]}, power_wd={config["power_weight_decay"]}, power_delta={config["weight_decay_ts"]*config["weight_decay"]}')
             ax.set_title(title)
             ax.grid(True, alpha=0.3)
             
@@ -175,9 +176,11 @@ def create_learning_curves(results_data, output_file="nanogpt_tanea_learning_cur
         tokens = steps * tokens_per_step
         
         color = colors[i]
-        label_base = f"g2={config['tanea_g2']}, g3={config['tanea_g3']}, δ={config['tanea_delta']}"
+        label_base = f"g2={config['tanea_g2']}, kappa={config['tanea_kappa']}, tanea_g3={config['tanea_g3']}"
         if 'weight_decay' in config:
             label_base += f", wd={config['weight_decay']}"
+            if config['power_weight_decay'] == 1.0:
+                label_base += f", power_delta={config['weight_decay_ts']*config['weight_decay']}"
         
         # Plot training and validation curves
         ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 

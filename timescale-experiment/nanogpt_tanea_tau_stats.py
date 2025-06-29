@@ -27,6 +27,8 @@ sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import ModelConfig, TextDataset, init_train_state, train_step, count_params, GPT
 
 import jax
+#jax.config.update('jax_default_dtype_bits', '16')
+#jax.config.update('jax_default_matmul_precision', 'bfloat16')
 import jax.numpy as jnp
 from power_law_rf.optimizers import powerlaw_schedule, tanea_optimizer, TaneaOptimizerState
 import optax
@@ -316,6 +318,14 @@ def parse_args():
         "--weight_decay", type=float, default=0.0,
         help="Weight decay parameter"
     )
+    parser.add_argument(
+        "--power_weight_decay", type=float, default=1.0,
+        help="Power of weight decay parameter"
+    )
+    parser.add_argument(
+        "--weight_decay_ts", type=float, default=1.0,
+        help="Timescale of weight decay parameter"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -367,7 +377,9 @@ def main():
         "tanea_g3": args.tanea_g3,
         "tanea_delta": args.tanea_delta,
         "tanea_kappa": args.tanea_kappa,
-        "weight_decay": args.weight_decay
+        "weight_decay": args.weight_decay,
+        "power_weight_decay": args.power_weight_decay,
+        "weight_decay_ts": args.weight_decay_ts
     }
     
     # Create LOG_STEPS
@@ -381,12 +393,12 @@ def main():
     g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
     g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
     delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
-    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta)
-    
+    wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
+    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler)
+
     tanea = optax.chain(
         optax.clip_by_global_norm(config['grad_clip']),
-        tanea,
-        optax.add_decayed_weights(-1.0*config["weight_decay"])
+        tanea
     )
     optimizer = tanea
     

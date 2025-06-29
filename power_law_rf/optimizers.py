@@ -196,7 +196,8 @@ def tanea_optimizer(
     beta_m : Optional[base.ScalarOrSchedule] = None,
     g1: Optional[base.ScalarOrSchedule] = None,
     beta_v : Optional[base.ScalarOrSchedule] = None,
-    magic_tau : float = 0.2,
+    magic_tau : float = 1.0,
+    wd : Optional[base.ScalarOrSchedule] = None,
     *,
     y_dtype: Optional[chex.ArrayDType] = None,
   ) -> base.GradientTransformation:
@@ -226,6 +227,10 @@ def tanea_optimizer(
         g1 = lambda _: 1.0
     elif not callable(g1):
         g1 = lambda _: g1
+    if wd is None:
+        wd = lambda _: 0.0
+    elif not callable(wd):
+        wd = lambda _: wd
 
     def init_fn(params):
 
@@ -234,8 +239,9 @@ def tanea_optimizer(
         tau = otu.tree_zeros_like(params, dtype=y_dtype)  #Tau
         return TaneaOptimizerState(count=jnp.zeros([], jnp.int32), m=m, v=v, tau=tau)
 
-    def update_fn(updates, state, params=None):
-        del params
+    def update_fn(updates, state, params):
+
+        new_wd = wd(state.count)
         newDelta = Delta(state.count)
         newg1 = g1(state.count)
         new_beta_m = beta_m(state.count)
@@ -253,14 +259,13 @@ def tanea_optimizer(
             updates,
             is_leaf=lambda x: x is None,
         )
-        ##  Changing the power to be 1.5 instead of 1.0 lead to instability.
-        ##  Changing the power to be 0.5 instead of 1.0 lead to a flat-tau vector
-        ##  The power of 1.0 appears to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
+        ##  The power of 1.0 ought to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
         tau_reg = lambda tau, t : jnp.maximum(tau, jnp.pow(1.0+t,-1.0))
         root_tau_reg = lambda tau, t : jnp.sqrt(tau_reg(tau, t))
         effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
 
-        tau_updater = lambda tau,u,v,t : jnp.abs(u)*(root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)  
+        #tau_updater = lambda tau,u,v,t : jnp.abs(u)*(root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)  
+        tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)  
 
         new_tau = jax.tree.map(
             lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*tau_updater(tau, u, v, state.count),
@@ -283,6 +288,14 @@ def tanea_optimizer(
             new_v,
             new_tau,
             #jnp.maximum(new_tau, 1.0/(1.0+state.count)),
+            is_leaf=lambda x: x is None,
+        )
+
+        #Apply weight decay
+        updates = jax.tree.map(
+            lambda u,p : u+(-1.0*new_wd)*p,
+            updates,
+            params,
             is_leaf=lambda x: x is None,
         )
         new_m = otu.tree_cast(new_m, y_dtype)
