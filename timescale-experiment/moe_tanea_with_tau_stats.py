@@ -52,7 +52,7 @@ D = 500   # Parameter dimension
 
 # MoE parameters
 M = 100  # Number of experts for general MoE
-ZETA = 3.0  # Power-law exponent for expert selection
+ZETA = 1.0  # Power-law exponent for expert selection
 
 # Training parameters
 # BATCH_SIZE = 32
@@ -539,7 +539,7 @@ plt.tight_layout()
 # Save the figure with descriptive name
 beta_str = "_".join([f"beta{beta}" for beta in BETA_LIST])
 filename = f"tanea_tau_order_stats_M{M}_D{D}_zeta{ZETA}_{beta_str}_steps{STEPS}.pdf"
-filepath = f"/Users/elliotpaquette/Documents/Experimental-main/Experimental/results/{filename}"
+filepath = f"./results/{filename}"
 plt.savefig(filepath, dpi=300, bbox_inches='tight')
 print(f"Figure saved to: {filepath}")
 

@@ -79,7 +79,7 @@ def extract_tau_statistics(opt_state):
     # Handle optax.chain optimizer - extract the Tanea state
     tanea_state = opt_state
     if hasattr(opt_state, '__len__') and len(opt_state) > 1:
-        # optax.chain creates a tuple: (clip_state, tanea_state)
+        # optax.chain creates a tuple: (clip_state, tanea_state, ...)
         tanea_state = opt_state[1]
     
     if not isinstance(tanea_state, TaneaOptimizerState):
@@ -312,6 +312,10 @@ def parse_args():
         "--tanea_kappa", type=float, default=1.0,
         help="Tanea Kappa parameter"
     )
+    parser.add_argument(
+        "--weight_decay", type=float, default=0.0,
+        help="Weight decay parameter"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -362,7 +366,8 @@ def main():
         "tanea_g2": args.tanea_g2,
         "tanea_g3": args.tanea_g3,
         "tanea_delta": args.tanea_delta,
-        "tanea_kappa": args.tanea_kappa
+        "tanea_kappa": args.tanea_kappa,
+        "weight_decay": args.weight_decay
     }
     
     # Create LOG_STEPS
@@ -380,7 +385,8 @@ def main():
     
     tanea = optax.chain(
         optax.clip_by_global_norm(config['grad_clip']),
-        tanea
+        tanea,
+        optax.add_decayed_weights(-1.0*config["weight_decay"])
     )
     optimizer = tanea
     

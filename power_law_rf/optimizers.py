@@ -193,6 +193,10 @@ def tanea_optimizer(
     g3: base.ScalarOrSchedule,
     Delta: base.ScalarOrSchedule,
     epsilon: float = 1e-8,
+    beta_m : Optional[base.ScalarOrSchedule] = None,
+    g1: Optional[base.ScalarOrSchedule] = None,
+    beta_v : Optional[base.ScalarOrSchedule] = None,
+    magic_tau : float = 0.2,
     *,
     y_dtype: Optional[chex.ArrayDType] = None,
   ) -> base.GradientTransformation:
@@ -210,8 +214,21 @@ def tanea_optimizer(
     """
 
     y_dtype = utils.canonicalize_dtype(y_dtype)
+    if beta_m is None:
+        beta_m = Delta
+    elif not callable(beta_m):
+        beta_m = lambda _: beta_m
+    if beta_v is None:
+        beta_v = Delta
+    elif not callable(beta_v):
+        beta_v = lambda _: beta_v
+    if g1 is None:
+        g1 = lambda _: 1.0
+    elif not callable(g1):
+        g1 = lambda _: g1
 
     def init_fn(params):
+
         m = otu.tree_zeros_like(params, dtype=y_dtype)  #First-Momentum
         v = otu.tree_zeros_like(params, dtype=y_dtype)  #Second-Momentum
         tau = otu.tree_zeros_like(params, dtype=y_dtype)  #Tau
@@ -220,31 +237,47 @@ def tanea_optimizer(
     def update_fn(updates, state, params=None):
         del params
         newDelta = Delta(state.count)
+        newg1 = g1(state.count)
+        new_beta_m = beta_m(state.count)
+        new_beta_v = beta_v(state.count)
 
         new_m = jax.tree.map(
-            lambda m,u : None if m is None else m*(1-newDelta) + u,
+            lambda m,u : None if m is None else m*(1-new_beta_m) + newg1*u,
             state.m,
             updates,
             is_leaf=lambda x: x is None,
         )
         new_v = jax.tree.map(
-            lambda v,u : None if v is None else v*(1-newDelta) + newDelta*(u**2),
+            lambda v,u : None if v is None else v*(1-new_beta_v) + new_beta_v*(u**2),
             state.v,
             updates,
             is_leaf=lambda x: x is None,
         )
+        ##  Changing the power to be 1.5 instead of 1.0 lead to instability.
+        ##  Changing the power to be 0.5 instead of 1.0 lead to a flat-tau vector
+        ##  The power of 1.0 appears to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
+        tau_reg = lambda tau, t : jnp.maximum(tau, jnp.pow(1.0+t,-1.0))
+        root_tau_reg = lambda tau, t : jnp.sqrt(tau_reg(tau, t))
+        effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
+
+        tau_updater = lambda tau,u,v,t : jnp.abs(u)*(root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)  
+
         new_tau = jax.tree.map(
-            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*jnp.abs(u*state.count)/(jnp.abs(u*state.count)+jnp.sqrt(v)+epsilon),
+            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*tau_updater(tau, u, v, state.count),
             state.tau,
             updates,
             new_v,
             is_leaf=lambda x: x is None,
             )
         
+        ## To understand the g3 term, we are only updating at moments of large speed, where the speed is measured by
+        ## abs(u * sqrt(tau_reg))/( abs(u * sqrt(tau_reg)) + sqrt(v) + epsilon) 
+        ## We then also divide by a factor of jnp.sqrt(v/tau_reg) + epsilon
+        ## The m term we need to divide by tau_reg to remove the p-effect.
         updates = jax.tree.map(
-            lambda m,u,v,tau : -1.0*g2(jnp.maximum(tau*state.count, 1.0))*u 
+            lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 
-            else -1.0*(g2(jnp.maximum(tau*state.count, 1.0))*u)/(jnp.sqrt(v/jnp.maximum(tau, 1.0/(1.0+state.count)))+epsilon)-(g3(jnp.maximum(tau*state.count, 1.0))*m*abs(u)/jnp.maximum(tau, 1.0/(1.0+state.count)))/(u**2+v/jnp.maximum(tau, 1.0/(1.0+state.count))+epsilon**2),
+            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*abs(u))/((u**2) * tau_reg(tau, state.count)+v+epsilon**2),
             new_m,
             updates,
             new_v,

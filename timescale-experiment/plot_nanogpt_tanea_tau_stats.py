@@ -92,7 +92,7 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
             
             if all_order_stats:
                 max_tau = max(all_order_stats)
-                min_tau_plot = max_tau * 1e-10  # 10 orders of magnitude lower
+                min_tau_plot = max_tau * 1e-5  # 10 orders of magnitude lower
                 
                 # Plot order statistics for each timestamp
                 for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
@@ -103,18 +103,21 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
                         # Filter order stats to only show those within our range
                         valid_mask = order_stats >= min_tau_plot
                         if np.any(valid_mask):
-                            filtered_k = k_values[valid_mask]
+                            filtered_k = 1.1**(k_values[valid_mask])
                             filtered_stats = order_stats[valid_mask]
-                            log_order_stats = np.log(filtered_stats + 1e-12)
                             
-                            ax.scatter(filtered_k, log_order_stats, 
-                                     color=colors[t_idx], alpha=0.7, s=20)
+                            ax.scatter(filtered_k, filtered_stats, 
+                                     color=colors[t_idx], alpha=0.7, s=5)
+
+                        
                 
                 # Set y-axis limits
-                ax.set_ylim(np.log(min_tau_plot), np.log(max_tau * 1.1))
+                ax.set_ylim(min_tau_plot, max_tau * 1.1)
             
-            ax.set_xlabel('k (order statistic index: (1.1)^k-th largest)')
-            ax.set_ylabel('log(τ_{((1.1)^k)})')
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel('k (order statistic index)')
+            ax.set_ylabel('τ_k')
             
             # Create title with model and optimizer parameters
             title = (f'NanoGPT Tanea Tau Statistics\n'
@@ -173,6 +176,8 @@ def create_learning_curves(results_data, output_file="nanogpt_tanea_learning_cur
         
         color = colors[i]
         label_base = f"g2={config['tanea_g2']}, g3={config['tanea_g3']}, δ={config['tanea_delta']}"
+        if 'weight_decay' in config:
+            label_base += f", wd={config['weight_decay']}"
         
         # Plot training and validation curves
         ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 
