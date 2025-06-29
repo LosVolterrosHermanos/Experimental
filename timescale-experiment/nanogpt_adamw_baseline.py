@@ -312,14 +312,20 @@ def main():
     ]))
     
     # Initialize AdamW optimizer
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(config['grad_clip']),
-        optax.adamw(
-            learning_rate=config['lr'],
-            b1=config['beta1'],
-            b2=config['beta2'],
-            weight_decay=config['weight_decay']
-        )
+    # optimizer = optax.chain(
+    #     optax.clip_by_global_norm(config['grad_clip']),
+    #     optax.adamw(
+    #         learning_rate=config['lr'],
+    #         b1=config['beta1'],
+    #         b2=config['beta2'],
+    #         weight_decay=config['weight_decay']
+    #     )
+    # )
+    optimizer = optax.adamw(
+        learning_rate=config['lr'],
+        b1=config['beta1'],
+        b2=config['beta2'],
+        weight_decay=config['weight_decay']
     )
     
     # Initialize model
