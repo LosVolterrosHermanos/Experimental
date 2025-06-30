@@ -48,15 +48,17 @@ def compute_tau_order_statistics(tau_vector):
         tau_vector: A 1D array of non-negative tau values
         
     Returns:
-        Array of order statistics: [largest, (1.1)^1-th largest, (1.1)^2-th largest, ...]
-        where we take the (1.1)^k-th largest for k = 0, 1, 2, ..., up to n
+        Tuple of (largest_order_stats, smallest_order_stats) where:
+        - largest_order_stats: [largest, (1.1)^1-th largest, (1.1)^2-th largest, ...]
+        - smallest_order_stats: [smallest, (1.1)^1-th smallest, (1.1)^2-th smallest, ...]
+        where we take the (1.1)^k-th for k = 0, 1, 2, ..., up to n
     """
     n = len(tau_vector)
     if n == 0:
-        return jnp.array([])
+        return jnp.array([]), jnp.array([])
     
-    # Sort in descending order
-    sorted_tau = jnp.sort(tau_vector)[::-1]
+    # Sort in descending order for largest stats
+    sorted_tau_desc = jnp.sort(tau_vector)[::-1]
     
     # Compute powers of 1.1 up to n, similar to evaluation times
     max_k = jnp.ceil(jnp.log(n) / jnp.log(1.1)).astype(jnp.int32)
@@ -66,7 +68,15 @@ def compute_tau_order_statistics(tau_vector):
     indices = jnp.unique(indices)
     indices = jnp.minimum(indices, n - 1)
     
-    return sorted_tau[indices]
+    # Get largest order statistics (same as before)
+    largest_order_stats = sorted_tau_desc[indices]
+    
+    # Get smallest order statistics using reversed indices
+    # For smallest: indices from the end of the sorted array
+    reversed_indices = (n - 1) - indices
+    smallest_order_stats = sorted_tau_desc[reversed_indices]
+    
+    return largest_order_stats, smallest_order_stats
 
 def extract_tau_statistics(opt_state):
     """Extract tau statistics from TaneaOptimizerState.
@@ -75,7 +85,7 @@ def extract_tau_statistics(opt_state):
         opt_state: Optimizer state (may be from optax.chain)
         
     Returns:
-        Dictionary with tau statistics
+        Dictionary with tau statistics including both largest and smallest order statistics
     """
     # Handle optax.chain optimizer - extract the Tanea state
     tanea_state = opt_state
@@ -90,11 +100,12 @@ def extract_tau_statistics(opt_state):
     tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
     tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
     
-    # Compute order statistics
-    order_stats = compute_tau_order_statistics(tau_vector)
+    # Compute order statistics (now returns both largest and smallest)
+    order_stats, reversed_order_stats = compute_tau_order_statistics(tau_vector)
     
     return {
         'tau_order_statistics': order_stats,
+        'tau_reversed_order_statistics': reversed_order_stats,
         'tau_mean': jnp.mean(tau_vector),
         'tau_std': jnp.std(tau_vector),
         'tau_min': jnp.min(tau_vector),
@@ -312,6 +323,7 @@ def main():
     tau_statistics = {
         'timestamps': [],
         'tau_order_statistics': [],
+        'tau_reversed_order_statistics': [],
         'tau_mean': [],
         'tau_std': [],
         'tau_min': [],
@@ -323,6 +335,7 @@ def main():
     if initial_tau_stats:
         tau_statistics['timestamps'].append(0)
         tau_statistics['tau_order_statistics'].append(initial_tau_stats['tau_order_statistics'])
+        tau_statistics['tau_reversed_order_statistics'].append(initial_tau_stats['tau_reversed_order_statistics'])
         tau_statistics['tau_mean'].append(initial_tau_stats['tau_mean'])
         tau_statistics['tau_std'].append(initial_tau_stats['tau_std'])
         tau_statistics['tau_min'].append(initial_tau_stats['tau_min'])
@@ -359,6 +372,7 @@ def main():
             if tau_stats:
                 tau_statistics['timestamps'].append(step)
                 tau_statistics['tau_order_statistics'].append(tau_stats['tau_order_statistics'])
+                tau_statistics['tau_reversed_order_statistics'].append(tau_stats['tau_reversed_order_statistics'])
                 tau_statistics['tau_mean'].append(tau_stats['tau_mean'])
                 tau_statistics['tau_std'].append(tau_stats['tau_std'])
                 tau_statistics['tau_min'].append(tau_stats['tau_min'])
@@ -379,7 +393,7 @@ def main():
     
     # Convert tau statistics lists to arrays
     for key in tau_statistics:
-        if key != 'tau_order_statistics':
+        if key not in ['tau_order_statistics', 'tau_reversed_order_statistics']:
             tau_statistics[key] = jnp.array(tau_statistics[key])
     
     # Save results

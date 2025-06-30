@@ -121,21 +121,30 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
             tau_times = tau_stats['timestamps']
             tau_order_stats = tau_stats['tau_order_statistics']
             
+            # Check if reversed order statistics are available
+            tau_reversed_order_stats = tau_stats.get('tau_reversed_order_statistics', None)
+            
             # Create color map for time evolution
             n_timestamps = len(tau_times)
             colors = plt.cm.plasma(np.linspace(0, 0.8, n_timestamps))
             
-            # Find overall max and min for y-axis range
+            # Find overall max and min for y-axis range (include both regular and reversed stats)
             all_order_stats = []
             for order_stats in tau_order_stats:
                 if len(order_stats) > 0:
                     all_order_stats.extend(order_stats)
             
+            # Also include reversed order statistics if available
+            if tau_reversed_order_stats:
+                for order_stats in tau_reversed_order_stats:
+                    if len(order_stats) > 0:
+                        all_order_stats.extend(order_stats)
+            
             if all_order_stats:
                 max_tau = max(all_order_stats)
                 min_tau_plot = max_tau * 1e-5  # 10 orders of magnitude lower
                 
-                # Plot order statistics for each timestamp
+                # Plot largest order statistics for each timestamp
                 for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
                     if len(order_stats) > 0:
                         # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
@@ -149,6 +158,22 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
                             
                             ax.scatter(filtered_k, filtered_stats, 
                                      color=colors[t_idx], alpha=0.7, s=5)
+                
+                # Plot smallest order statistics if available (same color scheme)
+                if tau_reversed_order_stats:
+                    for t_idx, (timestamp, reversed_order_stats) in enumerate(zip(tau_times, tau_reversed_order_stats)):
+                        if len(reversed_order_stats) > 0:
+                            # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
+                            k_values = np.arange(len(reversed_order_stats))
+                            
+                            # Filter order stats to only show those within our range
+                            valid_mask = reversed_order_stats >= min_tau_plot
+                            if np.any(valid_mask):
+                                filtered_k = 1.1**(k_values[valid_mask])
+                                filtered_stats = reversed_order_stats[valid_mask]
+                                
+                                ax.scatter(filtered_k, filtered_stats, 
+                                         color=colors[t_idx], alpha=0.7, s=5)
 
                         
                 
@@ -310,7 +335,13 @@ def print_summary_statistics(results_data):
             if len(tau_stats['tau_order_statistics']) > 0:
                 final_order_stats = tau_stats['tau_order_statistics'][-1]
                 if len(final_order_stats) > 0:
-                    print(f"  Order statistics (first 5): {final_order_stats[:5]}")
+                    print(f"  Largest order statistics (first 5): {final_order_stats[:5]}")
+                
+                # Also show smallest order statistics if available
+                if 'tau_reversed_order_statistics' in tau_stats and len(tau_stats['tau_reversed_order_statistics']) > 0:
+                    final_reversed_order_stats = tau_stats['tau_reversed_order_statistics'][-1]
+                    if len(final_reversed_order_stats) > 0:
+                        print(f"  Smallest order statistics (first 5): {final_reversed_order_stats[:5]}")
 
 def main():
     """Main function to load data and create visualizations."""
