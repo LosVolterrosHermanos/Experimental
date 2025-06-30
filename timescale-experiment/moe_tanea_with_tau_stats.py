@@ -1,16 +1,18 @@
-# MoE PLRF: Stochastic vs ODE Comparison with Tau Statistics
+#!/usr/bin/env python
 """
-This notebook compares stochastic training of Mixture of Experts PLRF models
-with theoretical ODE predictions and collects tau statistics from TaneaOptimizer.
-"""
+MoE PLRF Training with Tau Statistics Collection and Visualization.
 
-#@title Setup and Imports
+This script trains Mixture of Experts PLRF models using different optimizers
+(Tanea, TarMSProp-SGD, Adam) and collects tau statistics from TaneaOptimizer.
+It generates two main plots:
+1. Tau order statistics evolution over training
+2. Learning curves comparison across optimizers
+"""
 import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 from tqdm import tqdm
 from typing import NamedTuple, Callable, Dict, List, Union, Optional
 import numpy as np
@@ -36,17 +38,12 @@ class TaneaHparams(NamedTuple):
 
 import power_law_rf.deterministic_equivalent as theory
 
-
-
 # Set random seed
 key = random.PRNGKey(42)
 
-#@title Global Parameters
 # Model parameters
 ALPHA = 1.0
-BETA_LIST = [0.5, 0.8]#, 1.1, 1.4]
-# BETA_LIST = [0.8]
-# BETA = 0.8
+BETA_LIST = [0.5, 0.8]
 V = 2000  # Hidden dimension
 D = 500   # Parameter dimension
 
@@ -55,14 +52,8 @@ M = 100  # Number of experts for general MoE
 ZETA = 1.0  # Power-law exponent for expert selection
 
 # Training parameters
-# BATCH_SIZE = 32
 STEPS = 1000
-DT = 1e-3  # ODE time step
-
-# # Learning rate schedules
-# BASE_LR = 0.01
-# MOMENTUM = 0.9
-
+DT = 1e-3
 G2_SCALE = 0.2
 G3_OVER_G2 = 0.1
 BATCH_SIZE = 100
@@ -137,7 +128,11 @@ def extract_tau_statistics(opt_state):
 
 
 class TauTrackingMoEPLRFTrainer(MoEPLRFTrainer):
-    """Custom MoEPLRFTrainer that tracks tau statistics during training."""
+    """Custom MoEPLRFTrainer that tracks tau statistics during training.
+    
+    Extends the base MoEPLRFTrainer to collect tau statistics from TaneaOptimizer
+    at evaluation steps during training.
+    """
     
     def train(self,
               key: random.PRNGKey,
@@ -404,6 +399,7 @@ print("\n" + "="*60)
 print(f"General MoE PLRF: {M} Experts with Power-Law Selection + Tau Stats")
 print("="*60)
 
+# Main training experiment loop
 moe_results = []
 
 for beta in BETA_LIST:
@@ -473,7 +469,7 @@ for beta in BETA_LIST:
     })
 
 
-# Plot results
+# Visualization: Tau order statistics evolution
 fig, axes = plt.subplots(1, len(moe_results), figsize=(6 * len(moe_results), 5))
 if len(moe_results) == 1:
     axes = [axes]
@@ -585,7 +581,46 @@ print(f"Figure saved to: {filepath}")
 
 plt.show()
 
-# Print some tau statistics summary
+# Visualization: Learning curves comparison
+fig_curves, axes_curves = plt.subplots(1, len(moe_results), figsize=(6 * len(moe_results), 5))
+if len(moe_results) == 1:
+    axes_curves = [axes_curves]
+
+for i, result in enumerate(moe_results):
+    beta = result['beta']
+    ax = axes_curves[i]
+    
+    # Plot each optimizer's learning curve
+    optimizer_colors = {'tanea': 'red', 'tarmsprop_sgd': 'blue', 'adam': 'green'}
+    
+    for optimizer_name in ['tanea', 'tarmsprop_sgd', 'adam']:
+        if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
+            timestamps = result[optimizer_name]['timestamps']
+            losses = result[optimizer_name]['losses']
+            
+            if len(timestamps) > 0 and len(losses) > 0:
+                ax.loglog(timestamps, losses, 'o-', 
+                         color=optimizer_colors.get(optimizer_name, 'black'), 
+                         alpha=0.8, markersize=4, linewidth=2, 
+                         label=optimizer_name.upper())
+    
+    ax.set_xlabel('Training Iteration')
+    ax.set_ylabel('Population Risk')
+    ax.set_title(f'Learning Curves\nβ={beta}, M={M}, D={D}, ζ={ZETA}')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+plt.tight_layout()
+
+# Save learning curves figure
+curves_filename = f"learning_curves_M{M}_D{D}_zeta{ZETA}_{beta_str}_steps{STEPS}.pdf"
+curves_filepath = f"./results/{curves_filename}"
+plt.savefig(curves_filepath, dpi=300, bbox_inches='tight')
+print(f"Learning curves figure saved to: {curves_filepath}")
+
+plt.show()
+
+# Summary statistics output
 print("\n" + "="*60)
 print("Tau Statistics Summary")
 print("="*60)
