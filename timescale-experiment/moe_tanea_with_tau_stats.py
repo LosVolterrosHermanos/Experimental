@@ -77,15 +77,17 @@ def compute_tau_order_statistics(tau_vector):
         tau_vector: A 1D array of non-negative tau values
         
     Returns:
-        Array of order statistics: [largest, (1.1)^1-th largest, (1.1)^2-th largest, ...]
-        where we take the (1.1)^k-th largest for k = 0, 1, 2, ..., up to n
+        Tuple of (largest_order_stats, smallest_order_stats) where:
+        - largest_order_stats: [largest, (1.1)^1-th largest, (1.1)^2-th largest, ...]
+        - smallest_order_stats: [smallest, (1.1)^1-th smallest, (1.1)^2-th smallest, ...]
+        where we take the (1.1)^k-th for k = 0, 1, 2, ..., up to n
     """
     n = len(tau_vector)
     if n == 0:
-        return jnp.array([])
+        return jnp.array([]), jnp.array([])
     
-    # Sort in descending order
-    sorted_tau = jnp.sort(tau_vector)[::-1]
+    # Sort in descending order for largest stats
+    sorted_tau_desc = jnp.sort(tau_vector)[::-1]
     
     # Compute powers of 1.1 up to n, similar to evaluation times
     max_k = jnp.ceil(jnp.log(n) / jnp.log(1.1)).astype(jnp.int32)
@@ -95,7 +97,15 @@ def compute_tau_order_statistics(tau_vector):
     indices = jnp.unique(indices)
     indices = jnp.minimum(indices, n - 1)
     
-    return sorted_tau[indices]
+    # Get largest order statistics (same as before)
+    largest_order_stats = sorted_tau_desc[indices]
+    
+    # Get smallest order statistics using reversed indices
+    # For smallest: indices from the end of the sorted array
+    reversed_indices = (n - 1) - indices
+    smallest_order_stats = sorted_tau_desc[reversed_indices]
+    
+    return largest_order_stats, smallest_order_stats
 
 def extract_tau_statistics(opt_state):
     """Extract tau statistics from TaneaOptimizerState.
@@ -104,7 +114,7 @@ def extract_tau_statistics(opt_state):
         opt_state: TaneaOptimizerState containing tau tree
         
     Returns:
-        Dictionary with tau statistics
+        Dictionary with tau statistics including both largest and smallest order statistics
     """
     if not isinstance(opt_state, TaneaOptimizerState):
         return {}
@@ -113,11 +123,12 @@ def extract_tau_statistics(opt_state):
     tau_leaves = jax.tree_util.tree_leaves(opt_state.tau)
     tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
     
-    # Compute order statistics
-    order_stats = compute_tau_order_statistics(tau_vector)
+    # Compute order statistics (now returns both largest and smallest)
+    order_stats, reversed_order_stats = compute_tau_order_statistics(tau_vector)
     
     return {
         'tau_order_statistics': order_stats,
+        'tau_reversed_order_statistics': reversed_order_stats,
         'tau_mean': jnp.mean(tau_vector),
         'tau_std': jnp.std(tau_vector),
         'tau_min': jnp.min(tau_vector),
@@ -258,6 +269,7 @@ class TauTrackingMoEPLRFTrainer(MoEPLRFTrainer):
         tau_statistics = {
             'timestamps': [],
             'tau_order_statistics': [],
+            'tau_reversed_order_statistics': [],
             'tau_mean': [],
             'tau_std': [],
             'tau_min': [],
@@ -269,6 +281,7 @@ class TauTrackingMoEPLRFTrainer(MoEPLRFTrainer):
         if initial_tau_stats:
             tau_statistics['timestamps'].append(0)
             tau_statistics['tau_order_statistics'].append(initial_tau_stats['tau_order_statistics'])
+            tau_statistics['tau_reversed_order_statistics'].append(initial_tau_stats['tau_reversed_order_statistics'])
             tau_statistics['tau_mean'].append(initial_tau_stats['tau_mean'])
             tau_statistics['tau_std'].append(initial_tau_stats['tau_std'])
             tau_statistics['tau_min'].append(initial_tau_stats['tau_min'])
@@ -309,6 +322,7 @@ class TauTrackingMoEPLRFTrainer(MoEPLRFTrainer):
                 if tau_stats:
                     tau_statistics['timestamps'].append(step + 1)
                     tau_statistics['tau_order_statistics'].append(tau_stats['tau_order_statistics'])
+                    tau_statistics['tau_reversed_order_statistics'].append(tau_stats['tau_reversed_order_statistics'])
                     tau_statistics['tau_mean'].append(tau_stats['tau_mean'])
                     tau_statistics['tau_std'].append(tau_stats['tau_std'])
                     tau_statistics['tau_min'].append(tau_stats['tau_min'])
@@ -341,7 +355,7 @@ class TauTrackingMoEPLRFTrainer(MoEPLRFTrainer):
 
         # Convert tau statistics lists to arrays
         for key in tau_statistics:
-            if key != 'tau_order_statistics':
+            if key not in ['tau_order_statistics', 'tau_reversed_order_statistics']:
                 tau_statistics[key] = jnp.array(tau_statistics[key])
 
         results['tau_statistics'] = tau_statistics
@@ -471,6 +485,9 @@ for i, result in enumerate(moe_results):
         tau_times = result['tanea']['tau_statistics']['timestamps']
         tau_order_stats = result['tanea']['tau_statistics']['tau_order_statistics']
         
+        # Check if reversed order statistics are available
+        tau_reversed_order_stats = result['tanea']['tau_statistics'].get('tau_reversed_order_statistics', None)
+        
         if len(tau_order_stats) > 0:
             ax = axes[i]
             
@@ -478,17 +495,23 @@ for i, result in enumerate(moe_results):
             n_timestamps = len(tau_times)
             colors = plt.cm.plasma(np.linspace(0, 0.8, n_timestamps))
             
-            # Find overall max and min for y-axis range
+            # Find overall max and min for y-axis range (include both regular and reversed stats)
             all_order_stats = []
             for order_stats in tau_order_stats:
                 if len(order_stats) > 0:
                     all_order_stats.extend(order_stats)
             
+            # Also include reversed order statistics if available
+            if tau_reversed_order_stats:
+                for order_stats in tau_reversed_order_stats:
+                    if len(order_stats) > 0:
+                        all_order_stats.extend(order_stats)
+            
             if all_order_stats:
                 max_tau = max(all_order_stats)
-                min_tau_plot = max_tau * 1e-10  # 10 orders of magnitude lower
+                min_tau_plot = max_tau * 1e-5  # 5 orders of magnitude lower
                 
-                # Plot order statistics for each timestamp
+                # Plot largest order statistics for each timestamp
                 for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
                     if len(order_stats) > 0:
                         # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
@@ -497,18 +520,35 @@ for i, result in enumerate(moe_results):
                         # Filter order stats to only show those within our range
                         valid_mask = order_stats >= min_tau_plot
                         if np.any(valid_mask):
-                            filtered_k = k_values[valid_mask]
+                            filtered_k = 1.1**(k_values[valid_mask])
                             filtered_stats = order_stats[valid_mask]
-                            log_order_stats = np.log(filtered_stats + 1e-12)
                             
-                            ax.scatter(filtered_k, log_order_stats, 
+                            ax.scatter(filtered_k, filtered_stats, 
                                      color=colors[t_idx], alpha=0.7, s=20)
                 
+                # Plot smallest order statistics if available (same color scheme)
+                if tau_reversed_order_stats:
+                    for t_idx, (timestamp, reversed_order_stats) in enumerate(zip(tau_times, tau_reversed_order_stats)):
+                        if len(reversed_order_stats) > 0:
+                            # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
+                            k_values = np.arange(len(reversed_order_stats))
+                            
+                            # Filter order stats to only show those within our range
+                            valid_mask = reversed_order_stats >= min_tau_plot
+                            if np.any(valid_mask):
+                                filtered_k = 1.1**(k_values[valid_mask])
+                                filtered_stats = reversed_order_stats[valid_mask]
+                                
+                                ax.scatter(filtered_k, filtered_stats, 
+                                         color=colors[t_idx], alpha=0.7, s=20)
+                
                 # Set y-axis limits
-                ax.set_ylim(np.log(min_tau_plot), np.log(max_tau * 1.1))
+                ax.set_ylim(min_tau_plot, max_tau * 1.1)
             
-            ax.set_xlabel('k (order statistic index: (1.1)^k-th largest)')
-            ax.set_ylabel('log(τ_{((1.1)^k)})')
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel('k (order statistic index)')
+            ax.set_ylabel('τ_k')
             ax.set_title(f'Tanea Tau Order Statistics Evolution\nβ={beta}, M={M}, D={D}, ζ={ZETA}')
             ax.grid(True, alpha=0.3)
             
@@ -567,4 +607,10 @@ for result in moe_results:
                 print(f"    Final tau mean: {final_mean:.6f}")
                 print(f"    Final tau std: {final_std:.6f}")
                 print(f"    Final tau max: {final_max:.6f}")
-                print(f"    Final order statistics: {final_order_stats}")
+                print(f"    Largest order statistics (first 5): {final_order_stats[:5] if len(final_order_stats) > 0 else []}")
+                
+                # Also show smallest order statistics if available
+                if 'tau_reversed_order_statistics' in tau_stats and len(tau_stats['tau_reversed_order_statistics']) > 0:
+                    final_reversed_order_stats = tau_stats['tau_reversed_order_statistics'][-1]
+                    if len(final_reversed_order_stats) > 0:
+                        print(f"    Smallest order statistics (first 5): {final_reversed_order_stats[:5]}")
