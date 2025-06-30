@@ -520,6 +520,10 @@ def parse_args():
         help="Maximum tokens to load for validation"
     )
     parser.add_argument(
+        "--val_steps", type=int, default=20,
+        help="Number of validation steps"
+    )
+    parser.add_argument(
         "--grad_clip", type=float, default=2.0,
         help="Gradient clipping value"
     )
@@ -604,8 +608,8 @@ def main():
     # Configuration dictionary
     val_max_tokens = args.val_max_tokens
     if val_max_tokens is None:
-        # Default to enough tokens for 30 validation batches
-        val_max_tokens = args.val_batch_size * args.seq_len * 30
+        # Default to enough tokens for validation batches
+        val_max_tokens = args.val_batch_size * args.seq_len * (args.val_steps+1)
     
     config = {
         "train_steps": args.train_steps,
@@ -613,6 +617,7 @@ def main():
         "seq_len": args.seq_len,
         "val_batch_size": args.val_batch_size,
         "val_max_tokens": val_max_tokens,
+        "val_steps": args.val_steps,
         "grad_clip": args.grad_clip,
         "init_std": args.init_std,
         "results_dir": args.results_dir,
@@ -734,7 +739,7 @@ def main():
         # Log metrics at specified steps
         if step in LOG_STEPS:
             # Evaluate validation loss
-            val_loss = evaluate_validation_loss(state, val_dataset, config)
+            val_loss = evaluate_validation_loss(state, val_dataset, config, config["val_steps"])
             
             total_tokens = step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(step)
