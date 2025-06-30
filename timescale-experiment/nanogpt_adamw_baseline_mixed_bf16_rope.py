@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-NanoGPT training with Tanea optimizer using mixed precision (bfloat16 matmuls, float32 everything else) and RoPE.
-Based on nanogpt_tanea_tau_stats_pure_bf16_rope.py but with mixed precision for stability.
+NanoGPT training with AdamW optimizer using mixed precision (bfloat16 matmuls, float32 everything else) and RoPE.
+Based on nanogpt_adamw_baseline_pure_bf16_rope.py but with mixed precision for improved stability.
 """
 
 import os
@@ -29,7 +29,6 @@ import jax
 jax.config.update('jax_default_matmul_precision', 'bfloat16')
 
 import jax.numpy as jnp
-from power_law_rf.optimizers import powerlaw_schedule, tanea_optimizer, TaneaOptimizerState
 import optax
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
@@ -41,73 +40,11 @@ INIT_STD = 0.02
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def compute_tau_order_statistics(tau_vector):
-    """Compute order statistics for tau vector in a jittable way.
-    
-    Args:
-        tau_vector: A 1D array of non-negative tau values
-        
-    Returns:
-        Array of order statistics: [largest, (1.1)^1-th largest, (1.1)^2-th largest, ...]
-        where we take the (1.1)^k-th largest for k = 0, 1, 2, ..., up to n
-    """
-    n = len(tau_vector)
-    if n == 0:
-        return jnp.array([])
-    
-    # Sort in descending order
-    sorted_tau = jnp.sort(tau_vector)[::-1]
-    
-    # Compute powers of 1.1 up to n, similar to evaluation times
-    max_k = jnp.ceil(jnp.log(n) / jnp.log(1.1)).astype(jnp.int32)
-    indices = jnp.int32(1.1 ** jnp.arange(max_k + 1)) - 1  # 0-indexed: [0, 0, 1, 2, 3, 4, ...]
-    
-    # Remove duplicates and clamp to valid range
-    indices = jnp.unique(indices)
-    indices = jnp.minimum(indices, n - 1)
-    
-    return sorted_tau[indices]
-
-def extract_tau_statistics(opt_state):
-    """Extract tau statistics from TaneaOptimizerState.
-    
-    Args:
-        opt_state: Optimizer state (may be from optax.chain)
-        
-    Returns:
-        Dictionary with tau statistics
-    """
-    # Handle optax.chain optimizer - extract the Tanea state
-    tanea_state = opt_state
-    if hasattr(opt_state, '__len__') and len(opt_state) > 1:
-        # optax.chain creates a tuple: (clip_state, tanea_state, ...)
-        tanea_state = opt_state[1]
-    
-    if not isinstance(tanea_state, TaneaOptimizerState):
-        return {}
-    
-    # Flatten tau tree into a single vector
-    tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
-    tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
-    
-    # Compute order statistics
-    order_stats = compute_tau_order_statistics(tau_vector)
-    
-    return {
-        'tau_order_statistics': order_stats,
-        'tau_mean': jnp.mean(tau_vector),
-        'tau_std': jnp.std(tau_vector),
-        'tau_min': jnp.min(tau_vector),
-        'tau_max': jnp.max(tau_vector)
-    }
-
-# Model configuration and helper functions are now imported from the separate module
-
 @jax.jit
 def train_step(state: TrainState, x: jnp.ndarray, y: jnp.ndarray):
     def loss_fn(params: FrozenDict) -> jnp.ndarray:
         logits = state.apply_fn(params, x, False)
-        # Loss computation in float32
+        # Loss computation in float32 for numerical stability
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
         return loss
 
@@ -115,10 +52,8 @@ def train_step(state: TrainState, x: jnp.ndarray, y: jnp.ndarray):
     new_state = state.apply_gradients(grads=grads)
     return loss, new_state
 
-# FineWebDataset is now imported from the separate module
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train nanogpt with Tanea optimizer using mixed precision (bfloat16 matmuls) and RoPE")
+    parser = argparse.ArgumentParser(description="Train nanogpt with AdamW optimizer using mixed precision (bfloat16 matmuls) and RoPE")
     parser.add_argument(
         "--train_steps", type=int, default=10000,
         help="Number of training steps"
@@ -155,34 +90,22 @@ def parse_args():
         "--results_dir", type=str, default="results",
         help="Directory to store results"
     )
-    # Add Tanea hyperparameters
+    # Add AdamW hyperparameters
     parser.add_argument(
-        "--tanea_g2", type=float, default=1E-4,
-        help="Tanea G2 parameter"
+        "--lr", type=float, default=3e-4,
+        help="Learning rate for AdamW optimizer"
     )
     parser.add_argument(
-        "--tanea_g3", type=float, default=1E-5,
-        help="Tanea G3 parameter"
+        "--beta1", type=float, default=0.9,
+        help="Beta1 parameter for AdamW"
     )
     parser.add_argument(
-        "--tanea_delta", type=float, default=8.0,
-        help="Tanea Delta parameter"
+        "--beta2", type=float, default=0.95,
+        help="Beta2 parameter for AdamW"
     )
     parser.add_argument(
-        "--tanea_kappa", type=float, default=1.0,
-        help="Tanea Kappa parameter"
-    )
-    parser.add_argument(
-        "--weight_decay", type=float, default=0.0,
-        help="Weight decay parameter"
-    )
-    parser.add_argument(
-        "--power_weight_decay", type=float, default=1.0,
-        help="Power of weight decay parameter"
-    )
-    parser.add_argument(
-        "--weight_decay_ts", type=float, default=1.0,
-        help="Timescale of weight decay parameter"
+        "--weight_decay", type=float, default=0.01,
+        help="Weight decay parameter for AdamW"
     )
     # RoPE specific parameters
     parser.add_argument(
@@ -214,7 +137,7 @@ def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
 
 def main():
     """
-    Train NanoGPT with Tanea optimizer and collect tau statistics using mixed precision and RoPE.
+    Train NanoGPT with AdamW optimizer using mixed precision (bfloat16 matmuls, float32 everything else) and RoPE.
     """
     args = parse_args()
     
@@ -229,25 +152,22 @@ def main():
     val_max_tokens = args.val_max_tokens
     if val_max_tokens is None:
         # Default to enough tokens for validation batches
-        val_max_tokens = args.val_batch_size * args.seq_len * (args.val_steps+1)
+        val_max_tokens = args.val_batch_size * args.seq_len * (args.val_steps + 1)
     
     config = {
         "train_steps": args.train_steps,
         "batch_size": args.batch_size,
-        "seq_len": args.seq_len,
+        "seq_len": args.seq_len,  
         "val_batch_size": args.val_batch_size,
         "val_max_tokens": val_max_tokens,
         "val_steps": args.val_steps,
         "grad_clip": args.grad_clip,
         "init_std": args.init_std,
         "results_dir": args.results_dir,
-        "tanea_g2": args.tanea_g2,
-        "tanea_g3": args.tanea_g3,
-        "tanea_delta": args.tanea_delta,
-        "tanea_kappa": args.tanea_kappa,
+        "lr": args.lr,
+        "beta1": args.beta1,
+        "beta2": args.beta2,
         "weight_decay": args.weight_decay,
-        "power_weight_decay": args.power_weight_decay,
-        "weight_decay_ts": args.weight_decay_ts,
         "rope_base": args.rope_base,
         "precision": "mixed_bfloat16_rope"
     }
@@ -259,18 +179,16 @@ def main():
         jnp.array([config["train_steps"]])
     ]))
     
-    # Initialize Tanea optimizer
-    g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
-    g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
-    delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
-    wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
-    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler)
-
-    tanea = optax.chain(
+    # Initialize AdamW optimizer
+    optimizer = optax.chain(
         optax.clip_by_global_norm(config['grad_clip']),
-        tanea
+        optax.adamw(
+            learning_rate=config['lr'],
+            b1=config['beta1'],
+            b2=config['beta2'],
+            weight_decay=config['weight_decay']
+        )
     )
-    optimizer = tanea
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -280,7 +198,7 @@ def main():
     num_params = count_params(params)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
-    logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE positional embedding")
     
     # Initialize train state
     state = TrainState.create(
@@ -308,26 +226,6 @@ def main():
         'time_elapsed': []
     }
     
-    # Storage for tau statistics
-    tau_statistics = {
-        'timestamps': [],
-        'tau_order_statistics': [],
-        'tau_mean': [],
-        'tau_std': [],
-        'tau_min': [],
-        'tau_max': []
-    }
-    
-    # Initial tau statistics
-    initial_tau_stats = extract_tau_statistics(state.opt_state)
-    if initial_tau_stats:
-        tau_statistics['timestamps'].append(0)
-        tau_statistics['tau_order_statistics'].append(initial_tau_stats['tau_order_statistics'])
-        tau_statistics['tau_mean'].append(initial_tau_stats['tau_mean'])
-        tau_statistics['tau_std'].append(initial_tau_stats['tau_std'])
-        tau_statistics['tau_min'].append(initial_tau_stats['tau_min'])
-        tau_statistics['tau_max'].append(initial_tau_stats['tau_max'])
-    
     # Training loop with loss logging
     pbar = tqdm(range(config["train_steps"]), desc="Training")
     start_time = time.time()
@@ -354,16 +252,6 @@ def main():
             metrics_history['tokens_processed'].append(total_tokens)
             metrics_history['time_elapsed'].append(time.time() - start_time)
             
-            # Collect tau statistics
-            tau_stats = extract_tau_statistics(state.opt_state)
-            if tau_stats:
-                tau_statistics['timestamps'].append(step)
-                tau_statistics['tau_order_statistics'].append(tau_stats['tau_order_statistics'])
-                tau_statistics['tau_mean'].append(tau_stats['tau_mean'])
-                tau_statistics['tau_std'].append(tau_stats['tau_std'])
-                tau_statistics['tau_min'].append(tau_stats['tau_min'])
-                tau_statistics['tau_max'].append(tau_stats['tau_max'])
-            
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
@@ -372,31 +260,24 @@ def main():
             tqdm.write(f"  Val Loss: {val_loss:.6f}")
             tqdm.write(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             tqdm.write(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
-            if tau_stats:
-                tqdm.write(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
-            tqdm.write(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
+            tqdm.write(f"  LR: {config['lr']}, Beta1: {config['beta1']}, Beta2: {config['beta2']}, WD: {config['weight_decay']}")
             tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
-    
-    # Convert tau statistics lists to arrays
-    for key in tau_statistics:
-        if key != 'tau_order_statistics':
-            tau_statistics[key] = jnp.array(tau_statistics[key])
     
     # Save results
     results_data = {
         'metrics': metrics_history,
-        'tau_statistics': tau_statistics,
         'config': config,
         'num_params': num_params,
+        'optimizer_type': 'adamw',
         'precision': 'mixed_bfloat16_rope'
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     results_filename = (
-        f"{config['results_dir']}/nanogpt_tanea_results_mixed_bf16_rope_{timestamp}_"
+        f"{config['results_dir']}/nanogpt_adamw_baseline_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
-        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}.pkl"
+        f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
