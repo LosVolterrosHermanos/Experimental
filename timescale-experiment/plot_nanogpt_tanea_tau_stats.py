@@ -142,7 +142,7 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
             
             if all_order_stats:
                 max_tau = max(all_order_stats)
-                min_tau_plot = max_tau * 1e-5  # 10 orders of magnitude lower
+                min_tau_plot = max_tau * 1e-10  # 10 orders of magnitude lower
                 
                 # Plot largest order statistics for each timestamp
                 for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
@@ -187,9 +187,9 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
             
             # Create title with model and optimizer parameters
             title = (f'NanoGPT Tanea Tau Statistics\n'
-                    f'Params: {data["num_params"]:,}, '
-                    f'g2={config["tanea_g2"]}, kappa={config["tanea_kappa"]}, tanea_g3={config["tanea_g3"]}\n'
-                    f'wd={config["weight_decay"]}, power_wd={config["power_weight_decay"]}, power_delta={config["weight_decay_ts"]*config["weight_decay"]}')
+                    f'Params: {data["num_params"]:,},seq_len={config["seq_len"]},batch_size={config["batch_size"]},\n'
+                    f'g2={config["tanea_g2"]:.1e}, κ={config["tanea_kappa"]:.2f}, g3={config["tanea_g3"]:.1e}\n'
+                    f'log-wd-δ={config["weight_decay_ts"]*config["weight_decay"]:.2f}').replace('e+0', 'e+').replace('e-0', 'e-')
             ax.set_title(title)
             ax.grid(True, alpha=0.3)
             
@@ -239,11 +239,12 @@ def create_learning_curves(results_data, adamw_baseline=None, output_file="nanog
         tokens_per_step = config["batch_size"] * config["seq_len"]
         tokens = steps * tokens_per_step
         
+        label_base = f"AdamW Baseline, lr={config['lr']:.1e}, β1={config['beta1']:.2f}, β2={config['beta2']:.2f}, wd={config['weight_decay']:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
         # Plot AdamW baseline in black with thick lines
         ax.loglog(tokens, train_losses, 'o-', color='black', alpha=0.8, 
-                 markersize=5, linewidth=3, label='AdamW Baseline (train)')
+                 markersize=5, linewidth=3, label=label_base+" (train)")
         ax.loglog(tokens, val_losses, 's-', color='black', alpha=1.0, 
-                 markersize=5, linewidth=3, label='AdamW Baseline (val)')
+                 markersize=5, linewidth=3, label=label_base+" (val)")
     
     # Use different colors for different Tanea configurations
     colors = plt.cm.tab10(np.linspace(0, 1, len(results_data)))
@@ -260,11 +261,11 @@ def create_learning_curves(results_data, adamw_baseline=None, output_file="nanog
         tokens = steps * tokens_per_step
         
         color = colors[i]
-        label_base = f"Tanea g2={config['tanea_g2']}, κ={config['tanea_kappa']}, g3={config['tanea_g3']}"
+        label_base = f"Tanea g2={config['tanea_g2']:.1e}, κ={config['tanea_kappa']:.2f}, g3={config['tanea_g3']:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
         if 'weight_decay' in config:
-            label_base += f", wd={config['weight_decay']}"
+            #label_base += f", wd={config['weight_decay']}"
             if config['power_weight_decay'] == 1.0:
-                label_base += f", power_δ={config['weight_decay_ts']*config['weight_decay']}"
+                label_base += f", log_wd_δ={config['weight_decay_ts']*config['weight_decay']:.3f}"
         
         # Plot training and validation curves
         ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 
