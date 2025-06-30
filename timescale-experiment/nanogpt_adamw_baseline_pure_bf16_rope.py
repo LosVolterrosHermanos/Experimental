@@ -33,8 +33,6 @@ from flax import linen as nn
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
 
-# Enable bfloat16 as default dtype
-jax.config.update('jax_default_dtype_bits', '16')
 jax.config.update('jax_default_matmul_precision', 'bfloat16')
 
 LOG_STEPS_BASE = 1.1
