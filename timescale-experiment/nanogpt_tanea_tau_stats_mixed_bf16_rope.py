@@ -418,6 +418,31 @@ def main():
     
     print(f"Results saved to {results_filename}")
     
+    # Save checkpoint of weights
+    checkpoint_dir = "weight-checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint_filename = (
+        f"{checkpoint_dir}/nanogpt_tanea_checkpoint_mixed_bf16_rope_{timestamp}_"
+        f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
+        f"seq_{config['seq_len']}_"
+        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}.pkl"
+    )
+    
+    checkpoint_data = {
+        'params': state.params,
+        'config': config,
+        'num_params': num_params,
+        'precision': 'mixed_bfloat16_rope',
+        'final_train_loss': float(loss),
+        'final_val_loss': float(val_loss) if 'val_loss' in locals() else None
+    }
+    
+    with open(checkpoint_filename, 'wb') as f:
+        pickle.dump(checkpoint_data, f)
+    
+    print(f"Checkpoint saved to {checkpoint_filename}")
+    
     return results_data
 
 if __name__ == "__main__":
