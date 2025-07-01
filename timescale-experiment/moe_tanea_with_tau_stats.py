@@ -43,13 +43,13 @@ key = random.PRNGKey(42)
 
 # Model parameters
 ALPHA = 1.0
-BETA_LIST = [0.5, 0.8]
+BETA_LIST = [-0.3, 0.0, 0.8]
 V = 2000  # Hidden dimension
 D = 500   # Parameter dimension
 
 # MoE parameters
 M = 100  # Number of experts for general MoE
-ZETA = 1.0  # Power-law exponent for expert selection
+ZETA = 0.5  # Power-law exponent for expert selection
 
 # Training parameters
 STEPS = 1000
