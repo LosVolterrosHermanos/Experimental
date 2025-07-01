@@ -247,7 +247,7 @@ def create_learning_curves(results_data, adamw_baseline=None, output_file="nanog
                  markersize=5, linewidth=3, label=label_base+" (val)")
     
     # Use different colors for different Tanea configurations
-    colors = plt.cm.tab10(np.linspace(0, 1, len(results_data)))
+    colors = plt.cm.tab20(np.linspace(0, 1.0, len(results_data)))
     
     for i, data in enumerate(results_data):
         config = data['config']
@@ -268,10 +268,10 @@ def create_learning_curves(results_data, adamw_baseline=None, output_file="nanog
                 label_base += f", log_wd_δ={config['weight_decay_ts']*config['weight_decay']:.3f}"
         
         # Plot training and validation curves
-        ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 
-                 markersize=4, linewidth=2, label=f'{label_base} (train)')
-        ax.loglog(tokens, val_losses, 's-', color=color, alpha=1.0, 
-                 markersize=4, linewidth=2, label=f'{label_base} (val)')
+        # ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 
+        #          markersize=4, linewidth=2, label=f'{label_base} (train)')
+        ax.loglog(tokens, val_losses, 's-', color=color, alpha=0.7, 
+                 markersize=2, linewidth=1, label=f'{label_base} (val)')
     
     # Set axis labels and title
     ax.set_xlabel('Training Tokens')
@@ -294,7 +294,7 @@ def create_learning_curves(results_data, adamw_baseline=None, output_file="nanog
     
     # Add grid and legend
     ax.grid(True, which='both', linestyle='--', alpha=0.7)
-    ax.legend(fontsize=9, loc='upper right')
+    ax.legend(fontsize=5, loc='lower left')
     
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')

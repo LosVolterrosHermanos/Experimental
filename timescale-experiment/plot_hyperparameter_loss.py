@@ -115,7 +115,8 @@ def create_hyperparameter_loss_plots(results_data, output_file="hyperparameter_l
             'log_wd_delta': log_wd_delta,
             'loss_at_target': loss_at_target,
             'actual_step': actual_step,
-            'extrapolated_losses': extrapolated_losses
+            'extrapolated_losses': extrapolated_losses,
+            'filename': data['filename']
         })
     
     if not hyperparams:
@@ -215,8 +216,39 @@ def print_hyperparameter_summary(hyperparams):
     print(f"Target step: ~{target_step}")
     print(f"Extrapolated steps: {extrapolate_steps}")
     
+    # Find best performers at ~30k steps
+    valid_30k = [(i, h) for i, h in enumerate(hyperparams) if h['loss_at_target'] is not None]
+    valid_30k.sort(key=lambda x: x[1]['loss_at_target'])
+    
+    print(f"\n" + "="*50)
+    print("TOP 3 BEST at ~30k steps:")
+    print("="*50)
+    for rank, (i, h) in enumerate(valid_30k[:3], 1):
+        print(f"{rank}. {h['filename']}")
+        print(f"   Loss at step {h['actual_step']}: {h['loss_at_target']:.6f}")
+        print(f"   g2={h['g2']:.2e}, κ={h['kappa']:.3f}, g3={h['g3']:.2e}, log(wd·δ)={h['log_wd_delta']:.4f}")
+        print()
+    
+    # Find best performers at 75k steps (extrapolated)
+    valid_75k = [(i, h) for i, h in enumerate(hyperparams) 
+                 if h['extrapolated_losses'][2] is not None]  # 75k is index 2
+    valid_75k.sort(key=lambda x: x[1]['extrapolated_losses'][2])
+    
+    print("="*50)
+    print("TOP 3 BEST at 75k steps (extrapolated):")
+    print("="*50)
+    for rank, (i, h) in enumerate(valid_75k[:3], 1):
+        print(f"{rank}. {h['filename']}")
+        print(f"   Extrapolated loss at 75k: {h['extrapolated_losses'][2]:.6f}")
+        print(f"   g2={h['g2']:.2e}, κ={h['kappa']:.3f}, g3={h['g3']:.2e}, log(wd·δ)={h['log_wd_delta']:.4f}")
+        print()
+    
+    # Full details for all configs
+    print("="*80)
+    print("ALL CONFIGURATIONS:")
+    print("="*80)
     for i, h in enumerate(hyperparams):
-        print(f"\nConfig {i+1}:")
+        print(f"\nConfig {i+1}: {h['filename']}")
         print(f"  g2={h['g2']:.2e}, κ={h['kappa']:.3f}, g3={h['g3']:.2e}, log(wd·δ)={h['log_wd_delta']:.4f}")
         print(f"  Loss at step {h['actual_step']}: {h['loss_at_target']:.6f}")
         
@@ -248,7 +280,65 @@ def main():
         print(f"\nLoaded results for {len(results_data)} Tanea configurations")
         
         # Create hyperparameter analysis
+        hyperparams = []
+        target_step = 30000
+        extrapolate_steps = [45000, 60000, 75000]
+        
+        for data in results_data:
+            config = data['config']
+            metrics = data['metrics']
+            steps = np.array(metrics['step'])
+            val_losses = np.array(metrics['val_loss'])
+            
+            # Find step closest to but less than 30000
+            valid_steps = steps[steps < target_step]
+            if len(valid_steps) == 0:
+                continue
+            
+            target_idx = np.where(steps == valid_steps[-1])[0][0]
+            actual_step = steps[target_idx]
+            loss_at_target = val_losses[target_idx]
+            
+            # Get previous 4 points for linear fit (log-log space)
+            extrapolated_losses = []
+            if target_idx >= 4:
+                fit_steps = steps[target_idx-3:target_idx+1]
+                fit_losses = val_losses[target_idx-3:target_idx+1]
+                
+                # Linear fit in log-log space: log(loss) = a * log(step) + b
+                log_steps = np.log(fit_steps)
+                log_losses = np.log(fit_losses)
+                
+                # Linear regression
+                A = np.vstack([log_steps, np.ones(len(log_steps))]).T
+                slope, intercept = np.linalg.lstsq(A, log_losses, rcond=None)[0]
+                
+                # Extrapolate to future steps
+                for step in extrapolate_steps:
+                    log_extrapolated = slope * np.log(step) + intercept
+                    extrapolated_losses.append(np.exp(log_extrapolated))
+            else:
+                extrapolated_losses = [None, None, None]
+            
+            # Store hyperparameter values
+            g2 = config['tanea_g2']
+            kappa = config['tanea_kappa']
+            g3 = config['tanea_g3']
+            log_wd_delta = config['weight_decay_ts'] * config['weight_decay']
+            
+            hyperparams.append({
+                'g2': g2,
+                'kappa': kappa,
+                'g3': g3,
+                'log_wd_delta': log_wd_delta,
+                'loss_at_target': loss_at_target,
+                'actual_step': actual_step,
+                'extrapolated_losses': extrapolated_losses,
+                'filename': data['filename']
+            })
+        
         create_hyperparameter_loss_plots(results_data, args.output)
+        print_hyperparameter_summary(hyperparams)
         
     except Exception as e:
         print(f"Error: {e}")
