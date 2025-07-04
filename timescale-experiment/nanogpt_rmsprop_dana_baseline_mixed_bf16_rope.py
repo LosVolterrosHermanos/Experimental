@@ -281,7 +281,7 @@ def main():
             tqdm.write(f"  Val Loss: {val_loss:.6f}")
             tqdm.write(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             tqdm.write(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
-            tqdm.write(f"  LR: {config['lr']}, RMS Decay: {config['rms_decay']}, Dana G2: {config['dana_g2']}, G3: {config['dana_g3']}, Kappa: {config['dana_kappa']}")
+            tqdm.write(f"  RMS Decay: {config['rms_decay']}, Dana G2: {config['dana_g2']}, G3: {config['dana_g3']}, Kappa: {config['dana_kappa']}")
             tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Save results
@@ -298,7 +298,7 @@ def main():
         f"{config['results_dir']}/nanogpt_rmsprop_dana_baseline_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
-        f"lr_{config['lr']}_rmsdecay_{config['rms_decay']}_"
+        f"rmsdecay_{config['rms_decay']}_"
         f"danag2_{config['dana_g2']}_danag3_{config['dana_g3']}_kappa_{config['dana_kappa']}.pkl"
     )
     
