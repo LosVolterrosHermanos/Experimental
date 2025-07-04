@@ -51,7 +51,7 @@ M = 100  # Number of experts for general MoE
 ZETA = 2.0  # Power-law exponent for expert selection
 
 # Training parameters
-STEPS = 5000
+STEPS = 1000
 DT = 1e-3
 G2_SCALE = 0.2
 G3_OVER_G2 = 0.01
@@ -246,6 +246,12 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
             'tau_min': [extract_tau_statistics(opt_state).get('tau_min', 0.0)],
             'tau_max': [extract_tau_statistics(opt_state).get('tau_max', 0.0)]
         }
+        
+        # Initialize per-expert loss tracking if requested
+        per_expert_losses = None
+        if track_per_expert_loss:
+            per_expert_losses = {i: [super(MixtureOfExpertsPLRF, self.model).population_risk(init_params[:, i])]
+                               for i in range(self.model.m)}
 
         eval_idx = 1
         next_eval = eval_times[eval_idx] if eval_idx < len(eval_times) else num_steps + 1
@@ -272,6 +278,12 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
                 tau_statistics['tau_std'].append(tau_stats.get('tau_std', 0.0))
                 tau_statistics['tau_min'].append(tau_stats.get('tau_min', 0.0))
                 tau_statistics['tau_max'].append(tau_stats.get('tau_max', 0.0))
+                
+                # Track per-expert losses if requested
+                if track_per_expert_loss and per_expert_losses is not None:
+                    for i in range(self.model.m):
+                        expert_risk = super(MixtureOfExpertsPLRF, self.model).population_risk(params[:, i])
+                        per_expert_losses[i].append(expert_risk)
 
                 eval_idx += 1
                 if eval_idx < len(eval_times):
@@ -279,11 +291,18 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
                 else:
                     next_eval = num_steps + 1
 
-        return {
+        # Prepare results
+        results = {
             'timestamps': jnp.array(timestamps),
             'losses': jnp.array(losses),
             'tau_statistics': tau_statistics
         }
+        
+        # Add per-expert losses if tracked
+        if track_per_expert_loss and per_expert_losses is not None:
+            results['per_expert_losses'] = {i: jnp.array(per_expert_losses[i]) for i in range(self.model.m)}
+        
+        return results
 
 
 class LabelNoiseMixtureOfExpertsPLRF(MixtureOfExpertsPLRF):
@@ -553,6 +572,14 @@ for i, result in enumerate(moe_results):
     adam_per_expert = result['adam'].get('per_expert_losses', {})
     adam_timestamps = result['adam'].get('timestamps', [])
     
+    # Debug: Print what we have
+    print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert is not None and len(adam_per_expert) > 0}")
+    if adam_per_expert:
+        print(f"  Adam per-expert keys: {list(adam_per_expert.keys())[:5]}...")  # First 5 keys
+        if len(adam_per_expert) > 0:
+            first_key = list(adam_per_expert.keys())[0]
+            print(f"  Adam expert {first_key} has {len(adam_per_expert[first_key])} loss values")
+    
     # Plot each Tanea optimizer vs Adam
     for tanea_idx, (tanea_opt, tanea_label) in enumerate(zip(tanea_optimizers, tanea_labels)):
         ax_expert = axes_combined[1 + tanea_idx, i] if n_beta > 1 else axes_combined[1 + tanea_idx, 0]
@@ -561,7 +588,16 @@ for i, result in enumerate(moe_results):
             tanea_per_expert = result[tanea_opt]['per_expert_losses']
             tanea_timestamps = result[tanea_opt]['timestamps']
             
+            # Debug: Print what we have for this tanea optimizer
+            print(f"  {tanea_opt} has per_expert_losses: {tanea_per_expert is not None and len(tanea_per_expert) > 0}")
+            if tanea_per_expert:
+                print(f"    {tanea_opt} per-expert keys: {list(tanea_per_expert.keys())[:5]}...")  # First 5 keys
+                if len(tanea_per_expert) > 0:
+                    first_key = list(tanea_per_expert.keys())[0]
+                    print(f"    {tanea_opt} expert {first_key} has {len(tanea_per_expert[first_key])} loss values")
+            
             # Plot Adam vs Tanea per-expert losses
+            points_plotted = 0
             for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
                 if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
                     adam_losses = adam_per_expert[expert_idx]
@@ -577,6 +613,9 @@ for i, result in enumerate(moe_results):
                         ax_expert.scatter(adam_final, tanea_final, 
                                         alpha=0.7, s=50, 
                                         label=f'Expert {expert_idx}' if expert_idx < 10 else None)
+                        points_plotted += 1
+            
+            print(f"    {tanea_opt}: Plotted {points_plotted} points")
             
             # Add diagonal line for reference (equal performance)
             if len(adam_per_expert) > 0 and len(tanea_per_expert) > 0:
@@ -599,6 +638,19 @@ for i, result in enumerate(moe_results):
             ax_expert.set_yscale('log')
             if len(adam_per_expert) <= 10:  # Only show legend if not too many experts
                 ax_expert.legend(fontsize=8)
+        else:
+            # Debug: Print why we're not plotting
+            print(f"  {tanea_opt}: Not plotting - tanea_opt in result: {tanea_opt in result}")
+            if tanea_opt in result:
+                print(f"    per_expert_losses in result[{tanea_opt}]: {'per_expert_losses' in result[tanea_opt]}")
+            
+            # Show empty plot message
+            ax_expert.text(0.5, 0.5, f'No per-expert data\nfor {tanea_label}', 
+                         transform=ax_expert.transAxes, ha='center', va='center',
+                         fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+            ax_expert.set_xlabel('Adam Final Loss')
+            ax_expert.set_ylabel(f'{tanea_label} Final Loss')
+            ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
 
 plt.tight_layout()
 
