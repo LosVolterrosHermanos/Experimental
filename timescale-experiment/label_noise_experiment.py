@@ -367,28 +367,39 @@ class LabelNoiseMixtureOfExpertsPLRF(MixtureOfExpertsPLRF):
 
 def get_traceK(alpha, v):
     """Compute trace of K matrix for hyperparameter scaling."""
-    return jnp.sum(jnp.arange(1, v + 1) ** (-alpha))
+    x_grid = jnp.arange(1, v+1).reshape(1, v)
+    population_eigs = x_grid ** -alpha
+    population_trace = jnp.sum(population_eigs**2)
+    return population_trace
 
 
 def get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
     """Get Tanea hyperparameters."""
-    g2 = lambda t: g2_scale * tanea_lr_scalar * (1 + t) ** tanea_global_exponent
-    g3 = lambda t: g3_over_g2 * g2(t)
-    delta = lambda t: 1.0 / (1 + t)
-    return TaneaHparams(g2=g2, g3=g3, delta=delta)
+    kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
+    learning_rate = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
+    tanea_params = TaneaHparams(
+        g2=powerlaw_schedule(tanea_lr_scalar*learning_rate, 0.0, -tanea_global_exponent, 1.0),
+        g3=powerlaw_schedule(tanea_lr_scalar*learning_rate*g3_over_g2, 0.0, -tanea_global_exponent-(1.0 - kappa_b) / (2 * alpha), 1.0),
+        delta=powerlaw_schedule(1.0, 0.0, -1.0, 4.0+2*(alpha+beta)/(2*alpha))
+    )
+    return tanea_params
 
 
 def get_tarmsprop_sgd_hparams(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent):
     """Get TarMSProp-SGD hyperparameters."""
-    g2 = lambda t: g2_scale * tanea_lr_scalar * (1 + t) ** tanea_global_exponent
-    g3 = lambda t: 0.0  # No momentum term for SGD
-    delta = lambda t: 1.0 / (1 + t)
-    return TaneaHparams(g2=g2, g3=g3, delta=delta)
+    kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
+    learning_rate = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
+    tanea_params = TaneaHparams(
+        g2=powerlaw_schedule(tanea_lr_scalar*learning_rate, 0.0, -tanea_global_exponent, 1.0),
+        g3=powerlaw_schedule(0.0, 0.0, -tanea_global_exponent-(1.0 - kappa_b) / (2 * alpha), 1.0),
+        delta=powerlaw_schedule(1.0, 0.0, -1.0, 4.0+2*(alpha+beta)/(2*alpha))
+    )
+    return tanea_params
 
 
 def get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent):
     """Get Adam learning rate."""
-    return g2_scale * tanea_lr_scalar * 0.717
+    return 0.5*g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)*tanea_lr_scalar
 
 
 # Compute traceK for hyperparameter scaling
@@ -567,13 +578,31 @@ tanea_labels = ['Tanea (Effective-Clip)', 'Tanea (Theory)', 'Tanea (Always-On)',
 
 for i, result in enumerate(moe_results):
     beta = result['beta']
+    model = result['model']
     
     # Get Adam per-expert losses for comparison
     adam_per_expert = result['adam'].get('per_expert_losses', {})
     adam_timestamps = result['adam'].get('timestamps', [])
     
+    # Get TarMSProp-SGD per-expert losses for grey dots
+    tarmsprop_sgd_per_expert = result['tarmsprop_sgd'].get('per_expert_losses', {})
+    
+    # Get expert selection probabilities for color mapping
+    expert_probs = model.expert_probs  # This should be the probability vector p(i) ∝ i^(-zeta)
+    log_expert_probs = np.log(expert_probs)
+    
+    # Normalize log probabilities to [0, 1] for colormap
+    if len(log_expert_probs) > 1:
+        log_prob_min = np.min(log_expert_probs)
+        log_prob_max = np.max(log_expert_probs)
+        log_prob_normalized = (log_expert_probs - log_prob_min) / (log_prob_max - log_prob_min)
+    else:
+        log_prob_normalized = np.array([0.5])  # Single expert case
+    
     # Debug: Print what we have
     print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert is not None and len(adam_per_expert) > 0}")
+    print(f"  TarMSProp-SGD has per_expert_losses: {tarmsprop_sgd_per_expert is not None and len(tarmsprop_sgd_per_expert) > 0}")
+    print(f"  Expert probabilities shape: {expert_probs.shape}, log prob range: [{np.min(log_expert_probs):.3f}, {np.max(log_expert_probs):.3f}]")
     if adam_per_expert:
         print(f"  Adam per-expert keys: {list(adam_per_expert.keys())[:5]}...")  # First 5 keys
         if len(adam_per_expert) > 0:
@@ -596,7 +625,23 @@ for i, result in enumerate(moe_results):
                     first_key = list(tanea_per_expert.keys())[0]
                     print(f"    {tanea_opt} expert {first_key} has {len(tanea_per_expert[first_key])} loss values")
             
-            # Plot Adam vs Tanea per-expert losses
+            # First plot TarMSProp-SGD vs Adam in grey for all experts (background)
+            if len(tarmsprop_sgd_per_expert) > 0:
+                for expert_idx in range(min(len(adam_per_expert), len(tarmsprop_sgd_per_expert))):
+                    if expert_idx in adam_per_expert and expert_idx in tarmsprop_sgd_per_expert:
+                        adam_losses = adam_per_expert[expert_idx]
+                        tarmsprop_losses = tarmsprop_sgd_per_expert[expert_idx]
+                        
+                        if len(adam_losses) > 0 and len(tarmsprop_losses) > 0:
+                            adam_final = adam_losses[-1]
+                            tarmsprop_final = tarmsprop_losses[-1]
+                            
+                            # Plot TarMSProp-SGD points in grey
+                            ax_expert.scatter(adam_final, tarmsprop_final, 
+                                            color='grey', alpha=0.4, s=30, 
+                                            marker='s', edgecolors='none')
+            
+            # Plot Adam vs Tanea per-expert losses with plasma colors
             points_plotted = 0
             for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
                 if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
@@ -609,10 +654,14 @@ for i, result in enumerate(moe_results):
                         adam_final = adam_losses[-1]
                         tanea_final = tanea_losses[-1]
                         
-                        # Plot point with expert index as label
+                        # Get color based on log probability
+                        color_val = log_prob_normalized[expert_idx] if expert_idx < len(log_prob_normalized) else 0.5
+                        color = plt.cm.plasma(color_val)
+                        
+                        # Plot point with color based on expert selection probability
                         ax_expert.scatter(adam_final, tanea_final, 
-                                        alpha=0.7, s=50, 
-                                        label=f'Expert {expert_idx}' if expert_idx < 10 else None)
+                                        color=color, alpha=0.8, s=60, 
+                                        edgecolors='black', linewidth=0.5)
                         points_plotted += 1
             
             print(f"    {tanea_opt}: Plotted {points_plotted} points")
@@ -623,12 +672,43 @@ for i, result in enumerate(moe_results):
                 all_adam_finals = [adam_per_expert[j][-1] for j in adam_per_expert.keys() if len(adam_per_expert[j]) > 0]
                 all_tanea_finals = [tanea_per_expert[j][-1] for j in tanea_per_expert.keys() if len(tanea_per_expert[j]) > 0]
                 
+                # Also include TarMSProp-SGD for range calculation
+                if len(tarmsprop_sgd_per_expert) > 0:
+                    all_tarmsprop_finals = [tarmsprop_sgd_per_expert[j][-1] for j in tarmsprop_sgd_per_expert.keys() if len(tarmsprop_sgd_per_expert[j]) > 0]
+                    all_tanea_finals.extend(all_tarmsprop_finals)
+                
                 if all_adam_finals and all_tanea_finals:
                     min_loss = min(min(all_adam_finals), min(all_tanea_finals))
                     max_loss = max(max(all_adam_finals), max(all_tanea_finals))
                     
                     ax_expert.plot([min_loss, max_loss], [min_loss, max_loss], 
-                                 'k--', alpha=0.5, label='Equal Performance')
+                                 'k--', alpha=0.5, linewidth=1, label='Equal Performance')
+            
+            # Add colorbar for plasma mapping (only for the first plot in each row)
+            if i == 0 and points_plotted > 0:
+                sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(vmin=0, vmax=1))
+                sm.set_array([])
+                cbar = plt.colorbar(sm, ax=ax_expert, fraction=0.05, pad=0.04)
+                cbar.set_label('Log Expert Selection Probability\n(normalized)', fontsize=8)
+                
+                # Set colorbar ticks
+                cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
+                # Map back to actual log probability values
+                actual_log_probs = log_prob_min + np.array([0, 0.25, 0.5, 0.75, 1.0]) * (log_prob_max - log_prob_min)
+                cbar.set_ticklabels([f'{val:.1f}' for val in actual_log_probs])
+            
+            # Add legend with custom elements
+            legend_elements = [
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='purple', 
+                          markersize=8, alpha=0.8, markeredgecolor='black', linewidth=0,
+                          label=f'{tanea_label}'),
+                plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='grey', 
+                          markersize=6, alpha=0.4, linewidth=0,
+                          label='TarMSProp-SGD'),
+                plt.Line2D([0], [0], color='black', linestyle='--', alpha=0.5,
+                          label='Equal Performance')
+            ]
+            ax_expert.legend(handles=legend_elements, fontsize=8, loc='upper left')
             
             ax_expert.set_xlabel('Adam Final Loss')
             ax_expert.set_ylabel(f'{tanea_label} Final Loss')
@@ -636,8 +716,6 @@ for i, result in enumerate(moe_results):
             ax_expert.grid(True, alpha=0.3)
             ax_expert.set_xscale('log')
             ax_expert.set_yscale('log')
-            if len(adam_per_expert) <= 10:  # Only show legend if not too many experts
-                ax_expert.legend(fontsize=8)
         else:
             # Debug: Print why we're not plotting
             print(f"  {tanea_opt}: Not plotting - tanea_opt in result: {tanea_opt in result}")
