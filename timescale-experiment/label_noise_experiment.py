@@ -507,10 +507,16 @@ for beta in BETA_LIST:
     })
 
 
-# Visualization: Learning curves comparison
-fig_curves, axes_curves = plt.subplots(1, len(moe_results), figsize=(6 * len(moe_results), 5))
-if len(moe_results) == 1:
-    axes_curves = [axes_curves]
+# Visualization: Learning curves comparison and per-expert loss plots
+# Create a combined figure with learning curves on top and per-expert comparisons below
+n_beta = len(moe_results)
+n_tanea_optimizers = 5  # Number of Tanea-family optimizers
+fig_combined, axes_combined = plt.subplots(1 + n_tanea_optimizers, n_beta, figsize=(6 * n_beta, 5 * (1 + n_tanea_optimizers)))
+if n_beta == 1:
+    axes_combined = axes_combined.reshape(-1, 1)
+
+# Top row: Learning curves
+axes_curves = axes_combined[0, :] if n_beta > 1 else [axes_combined[0, 0]]
 
 for i, result in enumerate(moe_results):
     beta = result['beta']
@@ -536,14 +542,72 @@ for i, result in enumerate(moe_results):
     ax.grid(True, alpha=0.3)
     ax.legend()
 
+# Per-expert loss comparison plots (rows 1-5)
+tanea_optimizers = ['tanea', 'tanea_theory', 'tanea_always_on', 'tanea_strong_clip', 'tanea_first_moment']
+tanea_labels = ['Tanea (Effective-Clip)', 'Tanea (Theory)', 'Tanea (Always-On)', 'Tanea (Strong-Clip)', 'Tanea (First-Moment)']
+
+for i, result in enumerate(moe_results):
+    beta = result['beta']
+    
+    # Get Adam per-expert losses for comparison
+    adam_per_expert = result['adam'].get('per_expert_losses', {})
+    adam_timestamps = result['adam'].get('timestamps', [])
+    
+    # Plot each Tanea optimizer vs Adam
+    for tanea_idx, (tanea_opt, tanea_label) in enumerate(zip(tanea_optimizers, tanea_labels)):
+        ax_expert = axes_combined[1 + tanea_idx, i] if n_beta > 1 else axes_combined[1 + tanea_idx, 0]
+        
+        if tanea_opt in result and 'per_expert_losses' in result[tanea_opt]:
+            tanea_per_expert = result[tanea_opt]['per_expert_losses']
+            tanea_timestamps = result[tanea_opt]['timestamps']
+            
+            # Plot Adam vs Tanea per-expert losses
+            for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
+                if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
+                    adam_losses = adam_per_expert[expert_idx]
+                    tanea_losses = tanea_per_expert[expert_idx]
+                    
+                    # Only plot if we have data for both
+                    if len(adam_losses) > 0 and len(tanea_losses) > 0:
+                        # Use final losses for comparison
+                        adam_final = adam_losses[-1]
+                        tanea_final = tanea_losses[-1]
+                        
+                        # Plot point with expert index as label
+                        ax_expert.scatter(adam_final, tanea_final, 
+                                        alpha=0.7, s=50, 
+                                        label=f'Expert {expert_idx}' if expert_idx < 10 else None)
+            
+            # Add diagonal line for reference (equal performance)
+            if len(adam_per_expert) > 0 and len(tanea_per_expert) > 0:
+                # Get range for diagonal line
+                all_adam_finals = [adam_per_expert[j][-1] for j in adam_per_expert.keys() if len(adam_per_expert[j]) > 0]
+                all_tanea_finals = [tanea_per_expert[j][-1] for j in tanea_per_expert.keys() if len(tanea_per_expert[j]) > 0]
+                
+                if all_adam_finals and all_tanea_finals:
+                    min_loss = min(min(all_adam_finals), min(all_tanea_finals))
+                    max_loss = max(max(all_adam_finals), max(all_tanea_finals))
+                    
+                    ax_expert.plot([min_loss, max_loss], [min_loss, max_loss], 
+                                 'k--', alpha=0.5, label='Equal Performance')
+            
+            ax_expert.set_xlabel('Adam Final Loss')
+            ax_expert.set_ylabel(f'{tanea_label} Final Loss')
+            ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
+            ax_expert.grid(True, alpha=0.3)
+            ax_expert.set_xscale('log')
+            ax_expert.set_yscale('log')
+            if len(adam_per_expert) <= 10:  # Only show legend if not too many experts
+                ax_expert.legend(fontsize=8)
+
 plt.tight_layout()
 
-# Save learning curves figure
+# Save combined figure
 beta_str = "_".join([f"beta{beta}" for beta in BETA_LIST])
-curves_filename = f"label_noise_learning_curves_M{M}_D{D}_zeta{ZETA}_dof{STUDENT_T_DOF}_sigma{SIGMA}_{beta_str}_steps{STEPS}.pdf"
-curves_filepath = f"./results/{curves_filename}"
-plt.savefig(curves_filepath, dpi=300, bbox_inches='tight')
-print(f"Learning curves figure saved to: {curves_filepath}")
+combined_filename = f"label_noise_combined_analysis_M{M}_D{D}_zeta{ZETA}_dof{STUDENT_T_DOF}_sigma{SIGMA}_{beta_str}_steps{STEPS}.pdf"
+combined_filepath = f"./results/{combined_filename}"
+plt.savefig(combined_filepath, dpi=300, bbox_inches='tight')
+print(f"Combined analysis figure saved to: {combined_filepath}")
 
 plt.show()
 
