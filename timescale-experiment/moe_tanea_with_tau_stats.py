@@ -49,13 +49,13 @@ D = 500   # Parameter dimension
 
 # MoE parameters
 M = 100  # Number of experts for general MoE
-ZETA = 0.5  # Power-law exponent for expert selection
+ZETA = 2.0 # Power-law exponent for expert selection
 
 # Training parameters
-STEPS = 1000
+STEPS = 25000
 DT = 1e-3
 G2_SCALE = 0.2
-G3_OVER_G2 = 0.1
+G3_OVER_G2 = 0.01
 BATCH_SIZE = 100
 TANEA_LR_SCALAR = 1E-2
 TANEA_GLOBAL_EXPONENT = 0.0
@@ -423,6 +423,8 @@ for beta in BETA_LIST:
     # Create hyperparameters
     tanea_hparams = get_tanea_hparams(ALPHA, beta, D, BATCH_SIZE, G2_SCALE, G3_OVER_G2, traceK, TANEA_LR_SCALAR, TANEA_GLOBAL_EXPONENT)
     tanea_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta)
+    tanea_theory_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="theory")
+    tanea_always_on_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on")
     tarmsprop_sgd_hparams = get_tarmsprop_sgd_hparams(ALPHA, beta, D, BATCH_SIZE, G2_SCALE, traceK, TANEA_LR_SCALAR, TANEA_GLOBAL_EXPONENT)
     tarmsprop_sgd_opt = tanea_optimizer(tarmsprop_sgd_hparams.g2, tarmsprop_sgd_hparams.g3, tarmsprop_sgd_hparams.delta)
 
@@ -432,6 +434,28 @@ for beta in BETA_LIST:
     tanea_trainer = TauTrackingMoEPLRFTrainer(model, tanea_opt)
     key, train_key = random.split(key)
     tanea_results = tanea_trainer.train(
+        train_key,
+        num_steps=STEPS,
+        batch_size=BATCH_SIZE,  
+        track_per_expert_loss=True,
+        track_tau_stats=True
+    )
+
+    # Tanea theory experiment with tau statistics
+    tanea_theory_trainer = TauTrackingMoEPLRFTrainer(model, tanea_theory_opt)
+    key, train_key = random.split(key)
+    tanea_theory_results = tanea_theory_trainer.train(
+        train_key,
+        num_steps=STEPS,
+        batch_size=BATCH_SIZE,  
+        track_per_expert_loss=True,
+        track_tau_stats=True
+    )
+
+    # Tanea always-on experiment with tau statistics
+    tanea_always_on_trainer = TauTrackingMoEPLRFTrainer(model, tanea_always_on_opt)
+    key, train_key = random.split(key)
+    tanea_always_on_results = tanea_always_on_trainer.train(
         train_key,
         num_steps=STEPS,
         batch_size=BATCH_SIZE,  
@@ -464,6 +488,8 @@ for beta in BETA_LIST:
         'beta': beta,
         'model': model,
         'tanea': tanea_results,
+        'tanea_theory': tanea_theory_results,
+        'tanea_always_on': tanea_always_on_results,
         'tarmsprop_sgd': tarmsprop_sgd_results,
         'adam': adam_results
     })
@@ -591,9 +617,9 @@ for i, result in enumerate(moe_results):
     ax = axes_curves[i]
     
     # Plot each optimizer's learning curve
-    optimizer_colors = {'tanea': 'red', 'tarmsprop_sgd': 'blue', 'adam': 'green'}
+    optimizer_colors = {'tanea': 'red', 'tanea_theory': 'orange', 'tanea_always_on': 'purple', 'tarmsprop_sgd': 'blue', 'adam': 'green'}
     
-    for optimizer_name in ['tanea', 'tarmsprop_sgd', 'adam']:
+    for optimizer_name in ['tanea', 'tanea_theory', 'tanea_always_on', 'tarmsprop_sgd', 'adam']:
         if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
             timestamps = result[optimizer_name]['timestamps']
             losses = result[optimizer_name]['losses']
@@ -629,7 +655,7 @@ for result in moe_results:
     beta = result['beta']
     print(f"\nβ = {beta}")
     
-    for optimizer_name in ['tanea', 'tarmsprop_sgd']:
+    for optimizer_name in ['tanea', 'tanea_theory', 'tanea_always_on', 'tarmsprop_sgd']:
         if 'tau_statistics' in result[optimizer_name]:
             tau_stats = result[optimizer_name]['tau_statistics']
             if len(tau_stats['timestamps']) > 0:

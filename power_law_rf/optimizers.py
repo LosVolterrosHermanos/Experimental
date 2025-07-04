@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Callable
 
 import jax
 import jax.numpy as jnp
@@ -198,6 +198,8 @@ def tanea_optimizer(
     beta_v : Optional[base.ScalarOrSchedule] = None,
     magic_tau : float = 1.0,
     wd : Optional[base.ScalarOrSchedule] = None,
+    momentum_flavor: str = "effective-clip",
+    tau_flavor: str = "second-moment",
     *,
     y_dtype: Optional[chex.ArrayDType] = None,
   ) -> base.GradientTransformation:
@@ -207,6 +209,13 @@ def tanea_optimizer(
         g2: A scalar or schedule determining the second gradient coefficient.
         g3: A scalar or schedule determining the third gradient coefficient.
         Delta: A scalar or schedule determining the momentum decay rate.
+        epsilon: Small constant for numerical stability.
+        beta_m: Optional scalar or schedule for momentum decay rate.
+        g1: Optional scalar or schedule for first gradient coefficient.
+        beta_v: Optional scalar or schedule for second momentum decay rate.
+        magic_tau: Scaling factor for tau updates.
+        wd: Optional scalar or schedule for weight decay.
+        momentum_flavor: Type of momentum term for g3. Options are "effective-clip" (default) or "theory".
         y_dtype: Optional `dtype` to be used for the momentum accumulator; if
         `None` then the `dtype` is inferred from `params` and `updates`.
 
@@ -231,6 +240,48 @@ def tanea_optimizer(
         wd = lambda _: 0.0
     elif not callable(wd):
         wd = lambda _: wd
+
+    
+    ##  The power of 1.0 ought to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
+    tau_reg = lambda tau, t : jnp.maximum(tau, jnp.pow(1.0+t,-1.0))
+    root_tau_reg = lambda tau, t : jnp.sqrt(tau_reg(tau, t))
+    effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
+    quarter_root_tau_reg = lambda tau, t : jnp.power(tau_reg(tau, t),0.25)
+
+
+
+    tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
+    if tau_flavor == "second-moment":
+        tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
+    elif tau_flavor == "first-moment":
+        tau_updater = lambda tau,u,v,t : jnp.abs(u)*(quarter_root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(quarter_root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)
+    else:
+        raise ValueError(f"Unknown tau_flavor: {tau_flavor}. Must be 'second-moment' or 'first-moment'")
+
+    ## The g3_momentum_term will be used to multiply the first moment estimator $m$ and the schedule.  The standard Adam scaling would simply output 1/(sqrt(v)+epsilon), times a learning rate, which is here g3(effective_time(tau, t)).  
+    ## Now, in the sparse-in-time settig, where updates occur with some probability $p$, we ideally have something like $m = p*E(g)$, where $E(g)$ is some partial expectation of the gradient achieved by time averaging.  This $E(g)$ is a 'DANA-type' momentum estimate.  The $v = p*E(g^2)$ with the same sense of partial expectation.  The $tau$ is an approximation of $p$, and $\tau_reg$ stabilizes the estimate.  
+    ## Now we want the momentum term to only be updated at the same speed as when the gradient terms are added.  
+    ## To accomplish this, we consider the following instantaneous parameter-update-speed rule:
+    ## abs(u * sqrt(tau_reg))/( abs(u * sqrt(tau_reg)) + sqrt(v) + epsilon) 
+    ## This is similar to what is used to define tau itself.
+    ## We then want to normalize the parameter updates, and so we also introduce
+    ## sqrt(v/tau_reg) + epsilon/sqrt(tau_reg)
+    ## 1. The "theory" version now takes the product of these factors.
+    ## 2. The "effective-clip" version uses a more conservative estimate.  In the theory version we can represent the denominator as (a+b)*a, where a = sqrt(v)+epsilon and b = abs(u)*sqrt(tau_reg).  The 'effective-clip' version replaces this by (a+b)**2, which is always larger and moreover, is substantially larger if $b^2 \gg a^2$.  This can occur in settings where individual gradients have relatively heavy tails, in which case we expect the 'effective-clip' version to be more stable.
+    ## 3. The "always-on" version allows momentum updates to always occur.  Since $m$ is effectiely scaled by the time-scale $p$, we expect to update (1/p) times between g2 updates.  Hence in mean this should behave the same way as the 'theory' version, but we expect it to be less stable.  This is the same as what is used for the 'g2' pure gradient term.
+    ## 4. The "strong-clip" version is similar to the 'effective-clip'
+    g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+    # Create lambda function for g3 momentum term based on flavor
+    if momentum_flavor == "effective-clip":
+        g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+    elif momentum_flavor == "theory":
+        g3_momentum_term = lambda u, v, tau, t: abs(u)/((jnp.abs(u)*root_tau_reg(tau, t)+jnp.sqrt(v)+epsilon) * (jnp.sqrt(v)+epsilon) )
+    elif momentum_flavor == "always-on":
+        g3_momentum_term = lambda u, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+    elif momentum_flavor == "strong-clip":
+        g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))/(v+epsilon**2)
+    else:
+        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip' or 'theory'")  
 
     def init_fn(params):
 
@@ -259,13 +310,6 @@ def tanea_optimizer(
             updates,
             is_leaf=lambda x: x is None,
         )
-        ##  The power of 1.0 ought to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
-        tau_reg = lambda tau, t : jnp.maximum(tau, jnp.pow(1.0+t,-1.0))
-        root_tau_reg = lambda tau, t : jnp.sqrt(tau_reg(tau, t))
-        effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
-
-        #tau_updater = lambda tau,u,v,t : jnp.abs(u)*(root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)  
-        tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)  
 
         new_tau = jax.tree.map(
             lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*tau_updater(tau, u, v, state.count),
@@ -275,14 +319,11 @@ def tanea_optimizer(
             is_leaf=lambda x: x is None,
             )
         
-        ## To understand the g3 term, we are only updating at moments of large speed, where the speed is measured by
-        ## abs(u * sqrt(tau_reg))/( abs(u * sqrt(tau_reg)) + sqrt(v) + epsilon) 
-        ## We then also divide by a factor of jnp.sqrt(v/tau_reg) + epsilon
-        ## The m term we need to divide by tau_reg to remove the p-effect.
+
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 
-            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*abs(u))/((u**2) * tau_reg(tau, state.count)+v+epsilon**2),
+            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
             new_m,
             updates,
             new_v,
