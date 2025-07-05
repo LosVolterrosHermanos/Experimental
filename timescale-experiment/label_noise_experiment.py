@@ -61,7 +61,8 @@ def parse_args():
     parser.add_argument("--g3_over_g2", type=float, default=0.01, help="G3 to G2 ratio for momentum")
     parser.add_argument("--tanea_lr_scalar", type=float, default=1e-2, help="Tanea learning rate scalar")
     parser.add_argument("--tanea_global_exponent", type=float, default=0.0, help="Tanea global time exponent")
-    
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="Adam beta2 parameter (also used for RMSprop decay in RMSprop+Dana)")
+  
     # Label noise parameters
     parser.add_argument("--student_t_dof", type=float, default=3.0, help="Degrees of freedom for student-t distribution")
     parser.add_argument("--sigma", type=float, default=0.1, help="Scaling factor for the noise")
@@ -81,7 +82,6 @@ def parse_args():
     parser.add_argument("--disable_rmsprop_dana", action="store_true", help="Disable RMSprop+Dana optimizer")
     parser.add_argument("--enable_adam", action="store_true", default=True, help="Enable Adam optimizer")
     parser.add_argument("--disable_adam", action="store_true", help="Disable Adam optimizer")
-    parser.add_argument("--adam_beta2", type=float, default=0.999, help="Adam beta2 parameter (also used for RMSprop decay in RMSprop+Dana)")
     
     # Output parameters
     parser.add_argument("--results_dir", type=str, default="results", help="Directory to store results")
