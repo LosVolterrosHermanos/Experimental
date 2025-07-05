@@ -283,6 +283,63 @@ class MixtureOfExpertsPLRF(PowerLawRandomFeatures):
         R = jax.nn.one_hot(expert_indices, self.m).T  # (m, batch_size)
         return R
 
+    @partial(jax.jit, static_argnums=(0,))
+    def mixture_population_risk(self, params: jnp.ndarray) -> float:
+        """Compute exact population risk for MoE model efficiently (jittable).
+
+        Vectorized computation that avoids loops over experts.
+
+        Args:
+            params: Parameter matrix of shape (d, m) where column i contains
+                   parameters for expert i
+
+        Returns:
+            Population risk value
+        """
+        # Project all experts onto random features at once
+        # checkW is (v, d), params is (d, m) -> proj is (v, m)
+        proj = jnp.matmul(self.checkW, params)  # (v, m)
+        
+        # Broadcast checkb to match proj shape: (v, 1)
+        checkb_broadcast = self.checkb.reshape(-1, 1)  # (v, 1)
+        
+        # Compute squared errors for all experts at once: (v, m)
+        squared_errors = (proj - checkb_broadcast) ** 2
+        
+        # Sum over features for each expert: (m,)
+        expert_risks = jnp.sum(squared_errors, axis=0) / 2
+        
+        # Weight by expert probabilities and sum
+        total_risk = jnp.sum(self.expert_probs * expert_risks)
+        
+        return total_risk
+
+    @partial(jax.jit, static_argnums=(0,))
+    def per_expert_population_risk(self, params: jnp.ndarray) -> jnp.ndarray:
+        """Compute population risk for each expert efficiently (jittable).
+
+        Args:
+            params: Parameter matrix of shape (d, m) where column i contains
+                   parameters for expert i
+
+        Returns:
+            Array of population risk values, one for each expert (shape: m,)
+        """
+        # Project all experts onto random features at once
+        # checkW is (v, d), params is (d, m) -> proj is (v, m)
+        proj = jnp.matmul(self.checkW, params)  # (v, m)
+        
+        # Broadcast checkb to match proj shape: (v, 1)
+        checkb_broadcast = self.checkb.reshape(-1, 1)  # (v, 1)
+        
+        # Compute squared errors for all experts at once: (v, m)
+        squared_errors = (proj - checkb_broadcast) ** 2
+        
+        # Sum over features for each expert and divide by 2: (m,)
+        expert_risks = jnp.sum(squared_errors, axis=0) / 2
+        
+        return expert_risks
+
     def population_risk(self, params: jnp.ndarray) -> float:
         """Compute exact population risk for MoE model.
 
@@ -299,14 +356,8 @@ class MixtureOfExpertsPLRF(PowerLawRandomFeatures):
             # If given a single parameter vector, treat it as single expert
             return super().population_risk(params)
 
-        # Compute risk for each expert
-        total_risk = 0.0
-        for i in range(self.m):
-            expert_params = params[:, i]
-            expert_risk = super().population_risk(expert_params)
-            total_risk += self.expert_probs[i] * expert_risk
-
-        return total_risk
+        # Use the efficient vectorized implementation
+        return self.mixture_population_risk(params)
 
     def optimal_params_per_expert(self) -> jnp.ndarray:
         """Compute optimal parameters for each expert independently.
@@ -490,8 +541,9 @@ class MoEPLRFTrainer(PLRFTrainer):
 
         # Optionally track per-expert losses
         if track_per_expert_loss:
-            per_expert_losses = {i: [super(MixtureOfExpertsPLRF, self.model).population_risk(init_params[:, i])]
-                                for i in range(self.model.m)}
+            # Use vectorized per-expert risk computation and store as arrays
+            initial_per_expert_risks = self.model.per_expert_population_risk(init_params)
+            per_expert_losses = [initial_per_expert_risks]
 
         # Optionally track update history
         if track_update_history:
@@ -522,9 +574,9 @@ class MoEPLRFTrainer(PLRFTrainer):
                 timestamps.append(step + 1)
 
                 if track_per_expert_loss:
-                    for i in range(self.model.m):
-                        expert_risk = super(MixtureOfExpertsPLRF, self.model).population_risk(params[:, i])
-                        per_expert_losses[i].append(expert_risk)
+                    # Use vectorized per-expert risk computation
+                    current_per_expert_risks = self.model.per_expert_population_risk(params)
+                    per_expert_losses.append(current_per_expert_risks)
 
                 if track_update_history:
                     update_history['timestamps'].append(step + 1)
@@ -547,7 +599,8 @@ class MoEPLRFTrainer(PLRFTrainer):
         }
 
         if track_per_expert_loss:
-            results['per_expert_losses'] = {i: jnp.array(per_expert_losses[i]) for i in range(self.model.m)}
+            # Convert list of arrays to a single array of shape (n_eval_times, m)
+            results['per_expert_losses'] = jnp.array(per_expert_losses)
 
         if track_update_history:
             results['update_history'] = {

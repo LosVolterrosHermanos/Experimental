@@ -282,8 +282,9 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
         # Initialize per-expert loss tracking if requested
         per_expert_losses = None
         if track_per_expert_loss:
-            per_expert_losses = {i: [super(MixtureOfExpertsPLRF, self.model).population_risk(init_params[:, i])]
-                               for i in range(self.model.m)}
+            # Use vectorized per-expert risk computation and store as arrays
+            initial_per_expert_risks = self.model.per_expert_population_risk(init_params)
+            per_expert_losses = [initial_per_expert_risks]
 
         eval_idx = 1
         next_eval = eval_times[eval_idx] if eval_idx < len(eval_times) else num_steps + 1
@@ -313,9 +314,9 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
                 
                 # Track per-expert losses if requested
                 if track_per_expert_loss and per_expert_losses is not None:
-                    for i in range(self.model.m):
-                        expert_risk = super(MixtureOfExpertsPLRF, self.model).population_risk(params[:, i])
-                        per_expert_losses[i].append(expert_risk)
+                    # Use vectorized per-expert risk computation
+                    current_per_expert_risks = self.model.per_expert_population_risk(params)
+                    per_expert_losses.append(current_per_expert_risks)
 
                 eval_idx += 1
                 if eval_idx < len(eval_times):
@@ -332,7 +333,8 @@ class TauTrackingLabelNoiseMoEPLRFTrainer(MoEPLRFTrainer):
         
         # Add per-expert losses if tracked
         if track_per_expert_loss and per_expert_losses is not None:
-            results['per_expert_losses'] = {i: jnp.array(per_expert_losses[i]) for i in range(self.model.m)}
+            # Convert list of arrays to a single array of shape (n_eval_times, m)
+            results['per_expert_losses'] = jnp.array(per_expert_losses)
         
         return results
 
@@ -676,12 +678,12 @@ def main():
             beta = result['beta']
             model = result['model']
             
-            # Get Adam per-expert losses for comparison
-            adam_per_expert = result.get('adam', {}).get('per_expert_losses', {})
+            # Get Adam per-expert losses for comparison (now array format)
+            adam_per_expert_array = result.get('adam', {}).get('per_expert_losses', None)
             adam_timestamps = result.get('adam', {}).get('timestamps', [])
             
-            # Get Tanea G3=0 (formerly TarMSProp-SGD) per-expert losses for grey dots
-            tanea_g3zero_per_expert = result.get('tanea_g3zero', {}).get('per_expert_losses', {})
+            # Get Tanea G3=0 (formerly TarMSProp-SGD) per-expert losses for grey dots (now array format)
+            tanea_g3zero_per_expert_array = result.get('tanea_g3zero', {}).get('per_expert_losses', None)
             
             # Get expert selection probabilities for color mapping
             expert_probs = model.expert_probs  # This should be the probability vector p(i) ∝ i^(-zeta)
@@ -696,86 +698,73 @@ def main():
                 log_prob_normalized = np.array([0.5])  # Single expert case
             
             # Debug: Print what we have
-            print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert is not None and len(adam_per_expert) > 0}")
-            print(f"  Tanea G3=0 has per_expert_losses: {tanea_g3zero_per_expert is not None and len(tanea_g3zero_per_expert) > 0}")
+            print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert_array is not None}")
+            print(f"  Tanea G3=0 has per_expert_losses: {tanea_g3zero_per_expert_array is not None}")
             print(f"  Expert probabilities shape: {expert_probs.shape}, log prob range: [{np.min(log_expert_probs):.3f}, {np.max(log_expert_probs):.3f}]")
-            if adam_per_expert:
-                print(f"  Adam per-expert keys: {list(adam_per_expert.keys())[:5]}...")  # First 5 keys
-                if len(adam_per_expert) > 0:
-                    first_key = list(adam_per_expert.keys())[0]
-                    print(f"  Adam expert {first_key} has {len(adam_per_expert[first_key])} loss values")
+            if adam_per_expert_array is not None:
+                print(f"  Adam per-expert losses shape: {adam_per_expert_array.shape}")
+            if tanea_g3zero_per_expert_array is not None:
+                print(f"  Tanea G3=0 per-expert losses shape: {tanea_g3zero_per_expert_array.shape}")
             
             # Plot each enabled Tanea optimizer vs Adam
             for tanea_idx, (tanea_opt, tanea_label) in enumerate(enabled_tanea_opts):
                 ax_expert = axes_combined[1 + tanea_idx, i] if n_beta > 1 else axes_combined[1 + tanea_idx, 0]
                 
                 if tanea_opt in result and 'per_expert_losses' in result[tanea_opt]:
-                    tanea_per_expert = result[tanea_opt]['per_expert_losses']
+                    tanea_per_expert_array = result[tanea_opt]['per_expert_losses']
                     tanea_timestamps = result[tanea_opt]['timestamps']
                     
                     # Debug: Print what we have for this tanea optimizer
-                    print(f"  {tanea_opt} has per_expert_losses: {tanea_per_expert is not None and len(tanea_per_expert) > 0}")
-                    if tanea_per_expert:
-                        print(f"    {tanea_opt} per-expert keys: {list(tanea_per_expert.keys())[:5]}...")  # First 5 keys
-                        if len(tanea_per_expert) > 0:
-                            first_key = list(tanea_per_expert.keys())[0]
-                            print(f"    {tanea_opt} expert {first_key} has {len(tanea_per_expert[first_key])} loss values")
+                    print(f"  {tanea_opt} has per_expert_losses: {tanea_per_expert_array is not None}")
+                    if tanea_per_expert_array is not None:
+                        print(f"    {tanea_opt} per-expert losses shape: {tanea_per_expert_array.shape}")
                     
                     # First plot Tanea G3=0 vs Adam in grey for all experts (background)
-                    if len(tanea_g3zero_per_expert) > 0:
-                        for expert_idx in range(min(len(adam_per_expert), len(tanea_g3zero_per_expert))):
-                            if expert_idx in adam_per_expert and expert_idx in tanea_g3zero_per_expert:
-                                adam_losses = adam_per_expert[expert_idx]
-                                g3zero_losses = tanea_g3zero_per_expert[expert_idx]
-                                
-                                if len(adam_losses) > 0 and len(g3zero_losses) > 0:
-                                    adam_final = adam_losses[-1]
-                                    g3zero_final = g3zero_losses[-1]
-                                    
-                                    # Plot Tanea G3=0 points in grey
-                                    ax_expert.scatter(adam_final, g3zero_final, 
-                                                    color='grey', alpha=0.4, s=30, 
-                                                    marker='s', edgecolors='none')
+                    if adam_per_expert_array is not None and tanea_g3zero_per_expert_array is not None:
+                        # Get final losses for all experts (last row of arrays)
+                        adam_final_losses = adam_per_expert_array[-1, :]  # Shape: (m,)
+                        g3zero_final_losses = tanea_g3zero_per_expert_array[-1, :]  # Shape: (m,)
+                        
+                        # Plot Tanea G3=0 points in grey for all experts
+                        ax_expert.scatter(adam_final_losses, g3zero_final_losses, 
+                                        color='grey', alpha=0.4, s=30, 
+                                        marker='s', edgecolors='none')
                     
                     # Plot Adam vs Tanea per-expert losses with plasma colors
                     points_plotted = 0
-                    for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
-                        if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
-                            adam_losses = adam_per_expert[expert_idx]
-                            tanea_losses = tanea_per_expert[expert_idx]
-                            
-                            # Only plot if we have data for both
-                            if len(adam_losses) > 0 and len(tanea_losses) > 0:
-                                # Use final losses for comparison
-                                adam_final = adam_losses[-1]
-                                tanea_final = tanea_losses[-1]
-                                
-                                # Get color based on log probability
-                                color_val = log_prob_normalized[expert_idx] if expert_idx < len(log_prob_normalized) else 0.5
-                                color = plt.cm.plasma(color_val)
-                                
-                                # Plot point with color based on expert selection probability
-                                ax_expert.scatter(adam_final, tanea_final, 
-                                                color=color, alpha=0.8, s=60, 
-                                                edgecolors='black', linewidth=0.5)
-                                points_plotted += 1
+                    if adam_per_expert_array is not None and tanea_per_expert_array is not None:
+                        # Get final losses for all experts (last row of arrays)
+                        adam_final_losses = adam_per_expert_array[-1, :]  # Shape: (m,)
+                        tanea_final_losses = tanea_per_expert_array[-1, :]  # Shape: (m,)
+                        
+                        # Create colors for all experts based on log probability
+                        colors = plt.cm.plasma(log_prob_normalized)
+                        
+                        # Plot all experts at once
+                        ax_expert.scatter(adam_final_losses, tanea_final_losses, 
+                                        c=colors, alpha=0.8, s=60, 
+                                        edgecolors='black', linewidth=0.5)
+                        points_plotted = len(adam_final_losses)
                     
                     print(f"    {tanea_opt}: Plotted {points_plotted} points")
                     
                     # Add diagonal line for reference (equal performance)
-                    if len(adam_per_expert) > 0 and len(tanea_per_expert) > 0:
-                        # Get range for diagonal line
-                        all_adam_finals = [adam_per_expert[j][-1] for j in adam_per_expert.keys() if len(adam_per_expert[j]) > 0]
-                        all_tanea_finals = [tanea_per_expert[j][-1] for j in tanea_per_expert.keys() if len(tanea_per_expert[j]) > 0]
+                    if adam_per_expert_array is not None and tanea_per_expert_array is not None:
+                        # Get range for diagonal line using final losses
+                        adam_final_losses = adam_per_expert_array[-1, :]
+                        tanea_final_losses = tanea_per_expert_array[-1, :]
+                        
+                        # Combine all final losses for range calculation
+                        all_finals = np.concatenate([adam_final_losses, tanea_final_losses])
                         
                         # Also include Tanea G3=0 for range calculation
-                        if len(tanea_g3zero_per_expert) > 0:
-                            all_g3zero_finals = [tanea_g3zero_per_expert[j][-1] for j in tanea_g3zero_per_expert.keys() if len(tanea_g3zero_per_expert[j]) > 0]
-                            all_tanea_finals.extend(all_g3zero_finals)
+                        if tanea_g3zero_per_expert_array is not None:
+                            g3zero_final_losses = tanea_g3zero_per_expert_array[-1, :]
+                            all_finals = np.concatenate([all_finals, g3zero_final_losses])
                         
-                        if all_adam_finals and all_tanea_finals:
-                            min_loss = min(min(all_adam_finals), min(all_tanea_finals))
-                            max_loss = max(max(all_adam_finals), max(all_tanea_finals))
+                        if len(all_finals) > 0:
+                            min_loss = np.min(all_finals)
+                            max_loss = np.max(all_finals)
                             
                             ax_expert.plot([min_loss, max_loss], [min_loss, max_loss], 
                                          'k--', alpha=0.5, linewidth=1, label='Equal Performance')
