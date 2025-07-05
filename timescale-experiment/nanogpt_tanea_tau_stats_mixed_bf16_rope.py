@@ -195,6 +195,11 @@ def parse_args():
         "--weight_decay_ts", type=float, default=1.0,
         help="Timescale of weight decay parameter"
     )
+    parser.add_argument(
+        "--momentum_flavor", type=str, default="effective-clip",
+        choices=["effective-clip", "theory", "always-on", "strong-clip", "mk2"],
+        help="Tanea momentum flavor"
+    )
     # RoPE specific parameters
     parser.add_argument(
         "--rope_base", type=float, default=10000.0,
@@ -259,6 +264,7 @@ def main():
         "weight_decay": args.weight_decay,
         "power_weight_decay": args.power_weight_decay,
         "weight_decay_ts": args.weight_decay_ts,
+        "momentum_flavor": args.momentum_flavor,
         "rope_base": args.rope_base,
         "precision": "mixed_bfloat16_rope"
     }
@@ -275,7 +281,7 @@ def main():
     g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
     delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
     wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
-    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler)
+    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"])
 
     tanea = optax.chain(
         optax.clip_by_global_norm(config['grad_clip']),
@@ -292,6 +298,8 @@ def main():
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']}) with grad_clip={config['grad_clip']}")
+    logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
     # Initialize train state
     state = TrainState.create(
@@ -389,6 +397,7 @@ def main():
             if tau_stats:
                 tqdm.write(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
             tqdm.write(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
+            tqdm.write(f"  Momentum Flavor: {config['momentum_flavor']}")
             tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Convert tau statistics lists to arrays
@@ -410,7 +419,8 @@ def main():
         f"{config['results_dir']}/nanogpt_tanea_results_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
-        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}.pkl"
+        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
+        f"flavor_{config['momentum_flavor']}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
@@ -426,7 +436,8 @@ def main():
         f"{checkpoint_dir}/nanogpt_tanea_checkpoint_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
-        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}.pkl"
+        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
+        f"flavor_{config['momentum_flavor']}.pkl"
     )
     
     checkpoint_data = {
