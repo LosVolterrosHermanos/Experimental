@@ -464,9 +464,11 @@ def main():
     optimizers_dict['tanea_original'] = tanea_optimizer(base_tanea_hparams.g2, base_tanea_hparams.g3, base_tanea_hparams.delta, momentum_flavor="mk2")
     
     # 2. Schedule-MK1: Cosine decay for both g2 and g3
-    cosdecay = optax.cosine_decay_schedule(1.0,cosine_decay_steps)
-    g2_mk1 = lambda t : base_tanea_hparams.g2(t) * cosdecay(t)
-    g3_mk1 = lambda t : base_tanea_hparams.g3(t) * cosdecay(t)
+    HALFWAY = int(args.steps * 0.01 * 0.1)
+    FULLWAY = int(args.steps * 0.01)
+    linear_decay = optax.linear_schedule(1.0, 0.1, FULLWAY,HALFWAY)
+    g2_mk1 = lambda t : base_tanea_hparams.g2(t) * linear_decay(t)
+    g3_mk1 = lambda t : base_tanea_hparams.g3(t) * (linear_decay(t)**2)
     optimizers_dict['tanea_schedule_mk1'] = tanea_optimizer(g2_mk1, g3_mk1, base_tanea_hparams.delta, momentum_flavor="mk2")
     
     # 3. Schedule-MK2: Cosine decay for g2, linear decay to 0 for g3
@@ -552,8 +554,9 @@ def main():
         }
         
         # Top subplot: Learning curves
-        ax_curves = plt.subplot(3, 4, (1, 4))  # Top row, spans 4 columns
-        
+        #ax_curves = plt.subplot(3, 2, (1, 4))  # Top row, spans 4 columns
+        ax_curves = plt.subplot(4, 4, (1, 8))  # Top 2 rows, spans 4 columns
+
         # Plot each optimizer's learning curve
         optimizer_colors = {
             'tanea_original': 'red', 
@@ -607,10 +610,10 @@ def main():
         if adam_per_expert_array is not None and 'timestamps' in results_dict['adam']:
             adam_timestamps = results_dict['adam']['timestamps']
             
-            # Create subplot positions for 2x4 grid (excluding top row)
+            # Create subplot positions for 2x4 grid (excluding top 2 rows)
             subplot_positions = [
-                (3, 4, 5), (3, 4, 6), (3, 4, 7), (3, 4, 8),  # Second row
-                (3, 4, 9), (3, 4, 10), (3, 4, 11), (3, 4, 12)  # Third row  
+                (4, 4, 9), (4, 4, 10), (4, 4, 11), (4, 4, 12),  # Third row
+                (4, 4, 13), (4, 4, 14), (4, 4, 15), (4, 4, 16)  # Fourth row  
             ]
             
             plot_idx = 0
