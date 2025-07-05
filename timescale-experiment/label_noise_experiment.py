@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import NamedTuple, Callable, Dict, List, Union, Optional, Tuple
 import numpy as np
+import argparse
+import os
 
 from power_law_rf.optimizers import powerlaw_schedule, dana_optimizer, tanea_optimizer, TaneaOptimizerState
 
@@ -37,31 +39,60 @@ class TaneaHparams(NamedTuple):
 
 import power_law_rf.deterministic_equivalent as theory
 
-# Set random seed
+
+def parse_args():
+    """Parse command line arguments for the label noise experiment."""
+    parser = argparse.ArgumentParser(description="Label Noise Experiment for Momentum Strategy Comparison")
+    
+    # Model parameters
+    parser.add_argument("--alpha", type=float, default=1.0, help="Power law exponent for eigenvalue decay")
+    parser.add_argument("--beta", type=str, default="-0.3,0.0,0.8", help="Comma-separated list of beta values (power law exponent for target coefficient decay)")
+    parser.add_argument("--v", type=int, default=2000, help="Hidden dimension (number of random features)")
+    parser.add_argument("--d", type=int, default=500, help="Embedded dimension (parameter dimension)")
+    
+    # MoE parameters
+    parser.add_argument("--m", type=int, default=100, help="Number of experts")
+    parser.add_argument("--zeta", type=float, default=0.5, help="Power-law exponent for expert selection (p(i) ∝ i^(-zeta))")
+    
+    # Training parameters
+    parser.add_argument("--steps", type=int, default=125000, help="Number of training steps")
+    parser.add_argument("--batch_size", type=int, default=100, help="Training batch size")
+    parser.add_argument("--g2_scale", type=float, default=0.2, help="Base learning rate scale")
+    parser.add_argument("--g3_over_g2", type=float, default=0.01, help="G3 to G2 ratio for momentum")
+    parser.add_argument("--tanea_lr_scalar", type=float, default=1e-2, help="Tanea learning rate scalar")
+    parser.add_argument("--tanea_global_exponent", type=float, default=0.0, help="Tanea global time exponent")
+    
+    # Label noise parameters
+    parser.add_argument("--student_t_dof", type=float, default=3.0, help="Degrees of freedom for student-t distribution")
+    parser.add_argument("--sigma", type=float, default=0.1, help="Scaling factor for the noise")
+    
+    # Optimizer enable/disable flags
+    parser.add_argument("--enable_tanea", action="store_true", default=True, help="Enable Tanea (effective-clip) optimizer")
+    parser.add_argument("--disable_tanea", action="store_true", help="Disable Tanea (effective-clip) optimizer")
+    parser.add_argument("--enable_tanea_theory", action="store_true", help="Enable Tanea (theory) optimizer")
+    parser.add_argument("--enable_tanea_always_on", action="store_true", default=True, help="Enable Tanea (always-on) optimizer")
+    parser.add_argument("--disable_tanea_always_on", action="store_true", help="Disable Tanea (always-on) optimizer")
+    parser.add_argument("--enable_tanea_strong_clip", action="store_true", help="Enable Tanea (strong-clip) optimizer")
+    parser.add_argument("--enable_tanea_first_moment", action="store_true", default=True, help="Enable Tanea (first-moment) optimizer")
+    parser.add_argument("--disable_tanea_first_moment", action="store_true", help="Disable Tanea (first-moment) optimizer")
+    parser.add_argument("--enable_tanea_g3zero", action="store_true", default=True, help="Enable Tanea G3=0 (formerly TarMSProp-SGD) optimizer")
+    parser.add_argument("--disable_tanea_g3zero", action="store_true", help="Disable Tanea G3=0 optimizer")
+    parser.add_argument("--enable_rmsprop_dana", action="store_true", default=True, help="Enable RMSprop+Dana optimizer")
+    parser.add_argument("--disable_rmsprop_dana", action="store_true", help="Disable RMSprop+Dana optimizer")
+    parser.add_argument("--enable_adam", action="store_true", default=True, help="Enable Adam optimizer")
+    parser.add_argument("--disable_adam", action="store_true", help="Disable Adam optimizer")
+    
+    # Output parameters
+    parser.add_argument("--results_dir", type=str, default="results", help="Directory to store results")
+    parser.add_argument("--output_prefix", type=str, default="label_noise", help="Prefix for output files")
+    parser.add_argument("--no_plots", action="store_true", help="Skip generating plots")
+    parser.add_argument("--random_seed", type=int, default=42, help="Random seed for reproducibility")
+    
+    return parser.parse_args()
+
+
+# Set random seed (will be overridden by command line args)
 key = random.PRNGKey(42)
-
-# Model parameters
-ALPHA = 1.0
-BETA_LIST = [-0.3, 0.0, 0.8]
-V = 2000  # Hidden dimension
-D = 500   # Parameter dimension
-
-# MoE parameters
-M = 100  # Number of experts for general MoE
-ZETA = 0.5  # Power-law exponent for expert selection
-
-# Training parameters
-STEPS = 125000
-DT = 1e-3
-G2_SCALE = 0.2
-G3_OVER_G2 = 0.01
-BATCH_SIZE = 100
-TANEA_LR_SCALAR = 1E-2
-TANEA_GLOBAL_EXPONENT = 0.0
-
-# Label noise parameters
-STUDENT_T_DOF = 3.0  # Degrees of freedom for student-t distribution
-SIGMA = 0.1  # Scaling factor for the noise
 
 
 def compute_tau_order_statistics(tau_vector):
@@ -402,599 +433,476 @@ def get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, t
     return 0.5*g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)*tanea_lr_scalar
 
 
-# Compute traceK for hyperparameter scaling
-traceK = get_traceK(ALPHA, V)
-
-print("="*60)
-print("Label Noise Experiment")
-print("="*60)
-print(f"Model parameters: α={ALPHA}, β={BETA_LIST}, V={V}, D={D}")
-print(f"MoE parameters: M={M}, ζ={ZETA}")
-print(f"Training parameters: STEPS={STEPS}, BATCH_SIZE={BATCH_SIZE}")
-print(f"Label noise parameters: Student-t DOF={STUDENT_T_DOF}, σ={SIGMA}")
-print("="*60)
-
-# Main training experiment loop
-moe_results = []
-
-for beta in BETA_LIST:
-    print(f"\nRunning MoE experiments for β = {beta}")
-
-    # Create MoE model with label noise
-    key, model_key = random.split(key)
-    model = LabelNoiseMixtureOfExpertsPLRF(
-        alpha=ALPHA,
-        beta=beta,
-        v=V,
-        d=D,
-        m=M,
-        zeta=ZETA,
-        student_t_dof=STUDENT_T_DOF,
-        sigma=SIGMA,
-        key=model_key
-    )
-
-    print(f"  Expert probabilities: {model.expert_probs}")
-    print(f"  Optimal risk: {model.population_risk(model.optimal_params_per_expert()):.6f}")
-
-    # Create hyperparameters
-    tanea_hparams = get_tanea_hparams(ALPHA, beta, D, BATCH_SIZE, G2_SCALE, G3_OVER_G2, traceK, TANEA_LR_SCALAR, TANEA_GLOBAL_EXPONENT)
-    tanea_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta)
-    tanea_theory_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="theory")
-    tanea_always_on_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on")
-    tanea_strong_clip_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="strong-clip")
-    tanea_first_moment_opt = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, tau_flavor="first-moment")
-    tarmsprop_sgd_hparams = get_tarmsprop_sgd_hparams(ALPHA, beta, D, BATCH_SIZE, G2_SCALE, traceK, TANEA_LR_SCALAR, TANEA_GLOBAL_EXPONENT)
-    tarmsprop_sgd_opt = tanea_optimizer(tarmsprop_sgd_hparams.g2, tarmsprop_sgd_hparams.g3, tarmsprop_sgd_hparams.delta)
-
-    adam_opt = optax.adam(get_adam_lr(ALPHA, beta, D, BATCH_SIZE, G2_SCALE, traceK, TANEA_LR_SCALAR, TANEA_GLOBAL_EXPONENT),b1=0.0)
-
-    # Tanea experiment (effective-clip)
-    tanea_trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, tanea_opt)
-    key, train_key = random.split(key)
-    tanea_results = tanea_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True,
-        track_tau_stats=True
-    )
-
-    # Tanea theory experiment
-    tanea_theory_trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, tanea_theory_opt)
-    key, train_key = random.split(key)
-    tanea_theory_results = tanea_theory_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True,
-        track_tau_stats=True
-    )
-
-    # Tanea always-on experiment
-    tanea_always_on_trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, tanea_always_on_opt)
-    key, train_key = random.split(key)
-    tanea_always_on_results = tanea_always_on_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True,
-        track_tau_stats=True
-    )
-
-    # Tanea strong-clip experiment
-    tanea_strong_clip_trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, tanea_strong_clip_opt)
-    key, train_key = random.split(key)
-    tanea_strong_clip_results = tanea_strong_clip_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True,
-        track_tau_stats=True
-    )
-
-    # Tanea first-moment experiment
-    tanea_first_moment_trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, tanea_first_moment_opt)
-    key, train_key = random.split(key)
-    tanea_first_moment_results = tanea_first_moment_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True,
-        track_tau_stats=True
-    )
-
-    # Tarmsprop SGD experiment
-    tarmsprop_sgd_trainer = MoEPLRFTrainer(model, tarmsprop_sgd_opt)
-    key, train_key = random.split(key)
-    tarmsprop_sgd_results = tarmsprop_sgd_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True
-    )
-
-    # Adam experiment
-    adam_trainer = MoEPLRFTrainer(model, adam_opt)
-    key, train_key = random.split(key)
-    adam_results = adam_trainer.train(
-        train_key,
-        num_steps=STEPS,
-        batch_size=BATCH_SIZE,  
-        track_per_expert_loss=True
-    )
-
-    moe_results.append({
-        'beta': beta,
-        'model': model,
-        'tanea': tanea_results,
-        'tanea_theory': tanea_theory_results,
-        'tanea_always_on': tanea_always_on_results,
-        'tanea_strong_clip': tanea_strong_clip_results,
-        'tanea_first_moment': tanea_first_moment_results,
-        'tarmsprop_sgd': tarmsprop_sgd_results,
-        'adam': adam_results
-    })
-
-
-# Visualization: Learning curves comparison and per-expert loss plots
-# Create a combined figure with learning curves on top and per-expert comparisons below
-n_beta = len(moe_results)
-n_tanea_optimizers = 5  # Number of Tanea-family optimizers
-fig_combined, axes_combined = plt.subplots(1 + n_tanea_optimizers, n_beta, figsize=(6 * n_beta, 5 * (1 + n_tanea_optimizers)))
-if n_beta == 1:
-    axes_combined = axes_combined.reshape(-1, 1)
-
-# Top row: Learning curves
-axes_curves = axes_combined[0, :] if n_beta > 1 else [axes_combined[0, 0]]
-
-for i, result in enumerate(moe_results):
-    beta = result['beta']
-    ax = axes_curves[i]
+def get_rmsprop_dana_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
+    """Get RMSprop+Dana optimizer with hyperparameters based on Tanea/Adam settings."""
+    # Get Adam LR for Dana g2
+    adam_lr = get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent)
     
-    # Plot each optimizer's learning curve
-    optimizer_colors = {'tanea': 'red', 'tanea_theory': 'orange', 'tanea_always_on': 'purple', 'tanea_strong_clip': 'brown', 'tanea_first_moment': 'pink', 'tarmsprop_sgd': 'blue', 'adam': 'green'}
+    # # Get Tanea hyperparameters for kappa (delta parameter)
+    # tanea_hparams = get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent)
     
-    for optimizer_name in ['tanea', 'tanea_theory', 'tanea_always_on', 'tanea_strong_clip', 'tanea_first_moment', 'tarmsprop_sgd', 'adam']:
-        if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
-            timestamps = result[optimizer_name]['timestamps']
-            losses = result[optimizer_name]['losses']
+    # RMSprop decay (same as Adam beta2)
+    rms_decay = 0.999
+    
+    # Dana parameters
+    dana_g2 = adam_lr
+    dana_g3 = g3_over_g2 * adam_lr
+
+    kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
+    
+    # Create Dana optimizer schedules
+    g1 = powerlaw_schedule(1.0, 0.0, 0.0, 1)
+    g2 = powerlaw_schedule(dana_g2, 0.0, 0.0, 1)
+    g3 = powerlaw_schedule(dana_g3, 0.0, -1.0*(1.0 - kappa_b) / (2 * alpha), 1)
+    Delta = powerlaw_schedule(1.0, 0.0, -1.0, 4.0+2*(alpha+beta)/(2*alpha))
+    
+    # Create Dana optimizer
+    dana_opt = dana_optimizer(g1=g1, g2=g2, g3=g3, Delta=Delta)
+    
+    # Chain RMSProp and Dana optimizers
+    optimizer = optax.chain(
+        optax.scale_by_rms(decay=rms_decay, eps=1e-8, bias_correction=True),
+        dana_opt
+    )
+    
+    return optimizer
+
+
+def main():
+    """Main function to run the label noise experiment."""
+    args = parse_args()
+    
+    # Override global random seed
+    global key
+    key = random.PRNGKey(args.random_seed)
+    
+    # Parse beta list from string
+    beta_list = [float(b.strip()) for b in args.beta.split(',')]
+    
+    # Process optimizer flags (disable flags override enable flags)
+    enable_tanea = args.enable_tanea and not args.disable_tanea
+    enable_tanea_theory = args.enable_tanea_theory
+    enable_tanea_always_on = args.enable_tanea_always_on and not args.disable_tanea_always_on
+    enable_tanea_strong_clip = args.enable_tanea_strong_clip
+    enable_tanea_first_moment = args.enable_tanea_first_moment and not args.disable_tanea_first_moment
+    enable_tanea_g3zero = args.enable_tanea_g3zero and not args.disable_tanea_g3zero
+    enable_rmsprop_dana = args.enable_rmsprop_dana and not args.disable_rmsprop_dana
+    enable_adam = args.enable_adam and not args.disable_adam
+    
+    # Create results directory
+    os.makedirs(args.results_dir, exist_ok=True)
+    
+    # Compute traceK for hyperparameter scaling
+    traceK = get_traceK(args.alpha, args.v)
+
+    print("="*60)
+    print("Label Noise Experiment")
+    print("="*60)
+    print(f"Model parameters: α={args.alpha}, β={beta_list}, V={args.v}, D={args.d}")
+    print(f"MoE parameters: M={args.m}, ζ={args.zeta}")
+    print(f"Training parameters: STEPS={args.steps}, BATCH_SIZE={args.batch_size}")
+    print(f"Label noise parameters: Student-t DOF={args.student_t_dof}, σ={args.sigma}")
+    print(f"Enabled optimizers: Tanea={enable_tanea}, TaneaTheory={enable_tanea_theory}, TaneaAlwaysOn={enable_tanea_always_on}")
+    print(f"                   TaneaStrongClip={enable_tanea_strong_clip}, TaneaFirstMoment={enable_tanea_first_moment}")
+    print(f"                   TaneaG3Zero={enable_tanea_g3zero}, RMSpropDana={enable_rmsprop_dana}, Adam={enable_adam}")
+    print(f"Results directory: {args.results_dir}")
+    print("="*60)
+
+    # Main training experiment loop
+    moe_results = []
+
+    for beta in beta_list:
+        print(f"\nRunning MoE experiments for β = {beta}")
+
+        # Create MoE model with label noise
+        key, model_key = random.split(key)
+        model = LabelNoiseMixtureOfExpertsPLRF(
+            alpha=args.alpha,
+            beta=beta,
+            v=args.v,
+            d=args.d,
+            m=args.m,
+            zeta=args.zeta,
+            student_t_dof=args.student_t_dof,
+            sigma=args.sigma,
+            key=model_key
+        )
+
+        print(f"  Expert probabilities: {model.expert_probs}")
+        print(f"  Optimal risk: {model.population_risk(model.optimal_params_per_expert()):.6f}")
+
+        # Create hyperparameters
+        optimizers_dict = {}
+        
+        if enable_tanea:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta)
+        
+        if enable_tanea_theory:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_theory'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="theory")
+        
+        if enable_tanea_always_on:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_always_on'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on")
+        
+        if enable_tanea_strong_clip:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_strong_clip'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="strong-clip")
+        
+        if enable_tanea_first_moment:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_first_moment'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, tau_flavor="first-moment")
+        
+        if enable_tanea_g3zero:
+            tanea_g3zero_hparams = get_tarmsprop_sgd_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_g3zero'] = tanea_optimizer(tanea_g3zero_hparams.g2, tanea_g3zero_hparams.g3, tanea_g3zero_hparams.delta)
+        
+        if enable_rmsprop_dana:
+            optimizers_dict['rmsprop_dana'] = get_rmsprop_dana_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+        
+        if enable_adam:
+            optimizers_dict['adam'] = optax.adam(get_adam_lr(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent), b1=0.0)
+
+        # Run training experiments for enabled optimizers
+        results_dict = {'beta': beta, 'model': model}
+        
+        for opt_name, optimizer in optimizers_dict.items():
+            print(f"  Running {opt_name} experiment...")
             
-            if len(timestamps) > 0 and len(losses) > 0:
-                ax.loglog(timestamps, losses, 'o-', 
-                         color=optimizer_colors.get(optimizer_name, 'black'), 
-                         alpha=0.8, markersize=4, linewidth=2, 
-                         label=optimizer_name.upper())
-    
-    ax.set_xlabel('Training Iteration')
-    ax.set_ylabel('Population Risk')
-    ax.set_title(f'Learning Curves with Label Noise\nβ={beta}, M={M}, D={D}, ζ={ZETA}\nStudent-t DOF={STUDENT_T_DOF}, σ={SIGMA}')
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+            # Use TauTrackingLabelNoiseMoEPLRFTrainer for Tanea-family optimizers
+            if opt_name.startswith('tanea'):
+                trainer = TauTrackingLabelNoiseMoEPLRFTrainer(model, optimizer)
+                key, train_key = random.split(key)
+                results = trainer.train(
+                    train_key,
+                    num_steps=args.steps,
+                    batch_size=args.batch_size,  
+                    track_per_expert_loss=True,
+                    track_tau_stats=True
+                )
+            else:
+                # Use regular MoEPLRFTrainer for non-Tanea optimizers (Adam, RMSprop+Dana)
+                trainer = MoEPLRFTrainer(model, optimizer)
+                key, train_key = random.split(key)
+                results = trainer.train(
+                    train_key,
+                    num_steps=args.steps,
+                    batch_size=args.batch_size,  
+                    track_per_expert_loss=True
+                )
+            
+            results_dict[opt_name] = results
 
-# Per-expert loss comparison plots (rows 1-5)
-tanea_optimizers = ['tanea', 'tanea_theory', 'tanea_always_on', 'tanea_strong_clip', 'tanea_first_moment']
-tanea_labels = ['Tanea (Effective-Clip)', 'Tanea (Theory)', 'Tanea (Always-On)', 'Tanea (Strong-Clip)', 'Tanea (First-Moment)']
+        moe_results.append(results_dict)
 
-for i, result in enumerate(moe_results):
-    beta = result['beta']
-    model = result['model']
-    
-    # Get Adam per-expert losses for comparison
-    adam_per_expert = result['adam'].get('per_expert_losses', {})
-    adam_timestamps = result['adam'].get('timestamps', [])
-    
-    # Get TarMSProp-SGD per-expert losses for grey dots
-    tarmsprop_sgd_per_expert = result['tarmsprop_sgd'].get('per_expert_losses', {})
-    
-    # Get expert selection probabilities for color mapping
-    expert_probs = model.expert_probs  # This should be the probability vector p(i) ∝ i^(-zeta)
-    log_expert_probs = np.log(expert_probs)
-    
-    # Normalize log probabilities to [0, 1] for colormap
-    if len(log_expert_probs) > 1:
-        log_prob_min = np.min(log_expert_probs)
-        log_prob_max = np.max(log_expert_probs)
-        log_prob_normalized = (log_expert_probs - log_prob_min) / (log_prob_max - log_prob_min)
+    # Skip visualization if --no_plots flag is set
+    if not args.no_plots:
+        # Visualization: Learning curves comparison and per-expert loss plots
+        # Create a combined figure with learning curves on top and per-expert comparisons below
+        n_beta = len(moe_results)
+
+        # Count enabled Tanea optimizers for per-expert plots
+        enabled_tanea_opts = []
+        if enable_tanea:
+            enabled_tanea_opts.append(('tanea', 'Tanea (Effective-Clip)'))
+        if enable_tanea_theory:
+            enabled_tanea_opts.append(('tanea_theory', 'Tanea (Theory)'))
+        if enable_tanea_always_on:
+            enabled_tanea_opts.append(('tanea_always_on', 'Tanea (Always-On)'))
+        if enable_tanea_strong_clip:
+            enabled_tanea_opts.append(('tanea_strong_clip', 'Tanea (Strong-Clip)'))
+        if enable_tanea_first_moment:
+            enabled_tanea_opts.append(('tanea_first_moment', 'Tanea (First-Moment)'))
+        if enable_rmsprop_dana:
+            enabled_tanea_opts.append(('rmsprop_dana', 'RMSprop+Dana'))
+
+        n_tanea_optimizers = len(enabled_tanea_opts)
+        fig_combined, axes_combined = plt.subplots(1 + n_tanea_optimizers, n_beta, figsize=(6 * n_beta, 5 * (1 + n_tanea_optimizers)))
+        if n_beta == 1:
+            axes_combined = axes_combined.reshape(-1, 1)
+
+        # Top row: Learning curves
+        axes_curves = axes_combined[0, :] if n_beta > 1 else [axes_combined[0, 0]]
+
+        for i, result in enumerate(moe_results):
+            beta = result['beta']
+            ax = axes_curves[i]
+            
+            # Plot each optimizer's learning curve
+            optimizer_colors = {
+                'tanea': 'red', 
+                'tanea_theory': 'orange', 
+                'tanea_always_on': 'purple', 
+                'tanea_strong_clip': 'brown', 
+                'tanea_first_moment': 'pink', 
+                'tanea_g3zero': 'blue',  # Renamed from tarmsprop_sgd
+                'rmsprop_dana': 'darkred',  # New optimizer
+                'adam': 'green'
+            }
+            
+            # Get all available optimizers in this result (excluding 'beta' and 'model')
+            available_optimizers = [k for k in result.keys() if k not in ['beta', 'model']]
+            
+            for optimizer_name in available_optimizers:
+                if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
+                    timestamps = result[optimizer_name]['timestamps']
+                    losses = result[optimizer_name]['losses']
+                    
+                    if len(timestamps) > 0 and len(losses) > 0:
+                        # Create display name
+                        display_name = optimizer_name.upper().replace('_', ' ')
+                        if optimizer_name == 'tanea_g3zero':
+                            display_name = 'TANEA G3=0'
+                        elif optimizer_name == 'rmsprop_dana':
+                            display_name = 'RMSPROP+DANA'
+                        
+                        ax.loglog(timestamps, losses, 'o-', 
+                                 color=optimizer_colors.get(optimizer_name, 'black'), 
+                                 alpha=0.8, markersize=4, linewidth=2, 
+                                 label=display_name)
+            
+            ax.set_xlabel('Training Iteration')
+            ax.set_ylabel('Population Risk')
+            ax.set_title(f'Learning Curves with Label Noise\nβ={beta}, M={args.m}, D={args.d}, ζ={args.zeta}\nStudent-t DOF={args.student_t_dof}, σ={args.sigma}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+
+        # Per-expert loss comparison plots (rows 1-N for enabled Tanea optimizers)
+        for i, result in enumerate(moe_results):
+            beta = result['beta']
+            model = result['model']
+            
+            # Get Adam per-expert losses for comparison
+            adam_per_expert = result.get('adam', {}).get('per_expert_losses', {})
+            adam_timestamps = result.get('adam', {}).get('timestamps', [])
+            
+            # Get Tanea G3=0 (formerly TarMSProp-SGD) per-expert losses for grey dots
+            tanea_g3zero_per_expert = result.get('tanea_g3zero', {}).get('per_expert_losses', {})
+            
+            # Get expert selection probabilities for color mapping
+            expert_probs = model.expert_probs  # This should be the probability vector p(i) ∝ i^(-zeta)
+            log_expert_probs = np.log(expert_probs)
+            
+            # Normalize log probabilities to [0, 1] for colormap
+            if len(log_expert_probs) > 1:
+                log_prob_min = np.min(log_expert_probs)
+                log_prob_max = np.max(log_expert_probs)
+                log_prob_normalized = (log_expert_probs - log_prob_min) / (log_prob_max - log_prob_min)
+            else:
+                log_prob_normalized = np.array([0.5])  # Single expert case
+            
+            # Debug: Print what we have
+            print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert is not None and len(adam_per_expert) > 0}")
+            print(f"  Tanea G3=0 has per_expert_losses: {tanea_g3zero_per_expert is not None and len(tanea_g3zero_per_expert) > 0}")
+            print(f"  Expert probabilities shape: {expert_probs.shape}, log prob range: [{np.min(log_expert_probs):.3f}, {np.max(log_expert_probs):.3f}]")
+            if adam_per_expert:
+                print(f"  Adam per-expert keys: {list(adam_per_expert.keys())[:5]}...")  # First 5 keys
+                if len(adam_per_expert) > 0:
+                    first_key = list(adam_per_expert.keys())[0]
+                    print(f"  Adam expert {first_key} has {len(adam_per_expert[first_key])} loss values")
+            
+            # Plot each enabled Tanea optimizer vs Adam
+            for tanea_idx, (tanea_opt, tanea_label) in enumerate(enabled_tanea_opts):
+                ax_expert = axes_combined[1 + tanea_idx, i] if n_beta > 1 else axes_combined[1 + tanea_idx, 0]
+                
+                if tanea_opt in result and 'per_expert_losses' in result[tanea_opt]:
+                    tanea_per_expert = result[tanea_opt]['per_expert_losses']
+                    tanea_timestamps = result[tanea_opt]['timestamps']
+                    
+                    # Debug: Print what we have for this tanea optimizer
+                    print(f"  {tanea_opt} has per_expert_losses: {tanea_per_expert is not None and len(tanea_per_expert) > 0}")
+                    if tanea_per_expert:
+                        print(f"    {tanea_opt} per-expert keys: {list(tanea_per_expert.keys())[:5]}...")  # First 5 keys
+                        if len(tanea_per_expert) > 0:
+                            first_key = list(tanea_per_expert.keys())[0]
+                            print(f"    {tanea_opt} expert {first_key} has {len(tanea_per_expert[first_key])} loss values")
+                    
+                    # First plot Tanea G3=0 vs Adam in grey for all experts (background)
+                    if len(tanea_g3zero_per_expert) > 0:
+                        for expert_idx in range(min(len(adam_per_expert), len(tanea_g3zero_per_expert))):
+                            if expert_idx in adam_per_expert and expert_idx in tanea_g3zero_per_expert:
+                                adam_losses = adam_per_expert[expert_idx]
+                                g3zero_losses = tanea_g3zero_per_expert[expert_idx]
+                                
+                                if len(adam_losses) > 0 and len(g3zero_losses) > 0:
+                                    adam_final = adam_losses[-1]
+                                    g3zero_final = g3zero_losses[-1]
+                                    
+                                    # Plot Tanea G3=0 points in grey
+                                    ax_expert.scatter(adam_final, g3zero_final, 
+                                                    color='grey', alpha=0.4, s=30, 
+                                                    marker='s', edgecolors='none')
+                    
+                    # Plot Adam vs Tanea per-expert losses with plasma colors
+                    points_plotted = 0
+                    for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
+                        if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
+                            adam_losses = adam_per_expert[expert_idx]
+                            tanea_losses = tanea_per_expert[expert_idx]
+                            
+                            # Only plot if we have data for both
+                            if len(adam_losses) > 0 and len(tanea_losses) > 0:
+                                # Use final losses for comparison
+                                adam_final = adam_losses[-1]
+                                tanea_final = tanea_losses[-1]
+                                
+                                # Get color based on log probability
+                                color_val = log_prob_normalized[expert_idx] if expert_idx < len(log_prob_normalized) else 0.5
+                                color = plt.cm.plasma(color_val)
+                                
+                                # Plot point with color based on expert selection probability
+                                ax_expert.scatter(adam_final, tanea_final, 
+                                                color=color, alpha=0.8, s=60, 
+                                                edgecolors='black', linewidth=0.5)
+                                points_plotted += 1
+                    
+                    print(f"    {tanea_opt}: Plotted {points_plotted} points")
+                    
+                    # Add diagonal line for reference (equal performance)
+                    if len(adam_per_expert) > 0 and len(tanea_per_expert) > 0:
+                        # Get range for diagonal line
+                        all_adam_finals = [adam_per_expert[j][-1] for j in adam_per_expert.keys() if len(adam_per_expert[j]) > 0]
+                        all_tanea_finals = [tanea_per_expert[j][-1] for j in tanea_per_expert.keys() if len(tanea_per_expert[j]) > 0]
+                        
+                        # Also include Tanea G3=0 for range calculation
+                        if len(tanea_g3zero_per_expert) > 0:
+                            all_g3zero_finals = [tanea_g3zero_per_expert[j][-1] for j in tanea_g3zero_per_expert.keys() if len(tanea_g3zero_per_expert[j]) > 0]
+                            all_tanea_finals.extend(all_g3zero_finals)
+                        
+                        if all_adam_finals and all_tanea_finals:
+                            min_loss = min(min(all_adam_finals), min(all_tanea_finals))
+                            max_loss = max(max(all_adam_finals), max(all_tanea_finals))
+                            
+                            ax_expert.plot([min_loss, max_loss], [min_loss, max_loss], 
+                                         'k--', alpha=0.5, linewidth=1, label='Equal Performance')
+                    
+                    # Add colorbar for plasma mapping (only for the first plot in each row)
+                    if i == 0 and points_plotted > 0:
+                        sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(vmin=0, vmax=1))
+                        sm.set_array([])
+                        cbar = plt.colorbar(sm, ax=ax_expert, fraction=0.05, pad=0.04)
+                        cbar.set_label('Log Expert Selection Probability\n(normalized)', fontsize=8)
+                        
+                        # Set colorbar ticks
+                        cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
+                        # Map back to actual log probability values
+                        actual_log_probs = log_prob_min + np.array([0, 0.25, 0.5, 0.75, 1.0]) * (log_prob_max - log_prob_min)
+                        cbar.set_ticklabels([f'{val:.1f}' for val in actual_log_probs])
+                    
+                    # Add legend with custom elements
+                    legend_elements = [
+                        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='purple', 
+                                  markersize=8, alpha=0.8, markeredgecolor='black', linewidth=0,
+                                  label=f'{tanea_label}'),
+                        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='grey', 
+                                  markersize=6, alpha=0.4, linewidth=0,
+                                  label='Tanea G3=0'),
+                        plt.Line2D([0], [0], color='black', linestyle='--', alpha=0.5,
+                                  label='Equal Performance')
+                    ]
+                    ax_expert.legend(handles=legend_elements, fontsize=8, loc='upper left')
+                    
+                    ax_expert.set_xlabel('Adam Final Loss')
+                    ax_expert.set_ylabel(f'{tanea_label} Final Loss')
+                    ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
+                    ax_expert.grid(True, alpha=0.3)
+                    ax_expert.set_xscale('log')
+                    ax_expert.set_yscale('log')
+                else:
+                    # Debug: Print why we're not plotting
+                    print(f"  {tanea_opt}: Not plotting - tanea_opt in result: {tanea_opt in result}")
+                    if tanea_opt in result:
+                        print(f"    per_expert_losses in result[{tanea_opt}]: {'per_expert_losses' in result[tanea_opt]}")
+                    
+                    # Show empty plot message
+                    ax_expert.text(0.5, 0.5, f'No per-expert data\nfor {tanea_label}', 
+                                 transform=ax_expert.transAxes, ha='center', va='center',
+                                 fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax_expert.set_xlabel('Adam Final Loss')
+                    ax_expert.set_ylabel(f'{tanea_label} Final Loss')
+                    ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
+
+        plt.tight_layout()
+
+        # Save combined figure
+        beta_str = "_".join([f"beta{beta}" for beta in beta_list])
+        combined_filename = f"{args.output_prefix}_combined_analysis_M{args.m}_D{args.d}_zeta{args.zeta}_dof{args.student_t_dof}_sigma{args.sigma}_{beta_str}_steps{args.steps}.pdf"
+        combined_filepath = os.path.join(args.results_dir, combined_filename)
+        plt.savefig(combined_filepath, dpi=300, bbox_inches='tight')
+        print(f"Combined analysis figure saved to: {combined_filepath}")
+
+        plt.show()
     else:
-        log_prob_normalized = np.array([0.5])  # Single expert case
-    
-    # Debug: Print what we have
-    print(f"Beta {beta}: Adam has per_expert_losses: {adam_per_expert is not None and len(adam_per_expert) > 0}")
-    print(f"  TarMSProp-SGD has per_expert_losses: {tarmsprop_sgd_per_expert is not None and len(tarmsprop_sgd_per_expert) > 0}")
-    print(f"  Expert probabilities shape: {expert_probs.shape}, log prob range: [{np.min(log_expert_probs):.3f}, {np.max(log_expert_probs):.3f}]")
-    if adam_per_expert:
-        print(f"  Adam per-expert keys: {list(adam_per_expert.keys())[:5]}...")  # First 5 keys
-        if len(adam_per_expert) > 0:
-            first_key = list(adam_per_expert.keys())[0]
-            print(f"  Adam expert {first_key} has {len(adam_per_expert[first_key])} loss values")
-    
-    # Plot each Tanea optimizer vs Adam
-    for tanea_idx, (tanea_opt, tanea_label) in enumerate(zip(tanea_optimizers, tanea_labels)):
-        ax_expert = axes_combined[1 + tanea_idx, i] if n_beta > 1 else axes_combined[1 + tanea_idx, 0]
+        print("Skipping plots due to --no_plots flag")
+
+    # Summary statistics output
+    print("\n" + "="*60)
+    print("Label Noise Experiment Summary")
+    print("="*60)
+
+    for result in moe_results:
+        beta = result['beta']
+        print(f"\nβ = {beta}")
         
-        if tanea_opt in result and 'per_expert_losses' in result[tanea_opt]:
-            tanea_per_expert = result[tanea_opt]['per_expert_losses']
-            tanea_timestamps = result[tanea_opt]['timestamps']
-            
-            # Debug: Print what we have for this tanea optimizer
-            print(f"  {tanea_opt} has per_expert_losses: {tanea_per_expert is not None and len(tanea_per_expert) > 0}")
-            if tanea_per_expert:
-                print(f"    {tanea_opt} per-expert keys: {list(tanea_per_expert.keys())[:5]}...")  # First 5 keys
-                if len(tanea_per_expert) > 0:
-                    first_key = list(tanea_per_expert.keys())[0]
-                    print(f"    {tanea_opt} expert {first_key} has {len(tanea_per_expert[first_key])} loss values")
-            
-            # First plot TarMSProp-SGD vs Adam in grey for all experts (background)
-            if len(tarmsprop_sgd_per_expert) > 0:
-                for expert_idx in range(min(len(adam_per_expert), len(tarmsprop_sgd_per_expert))):
-                    if expert_idx in adam_per_expert and expert_idx in tarmsprop_sgd_per_expert:
-                        adam_losses = adam_per_expert[expert_idx]
-                        tarmsprop_losses = tarmsprop_sgd_per_expert[expert_idx]
-                        
-                        if len(adam_losses) > 0 and len(tarmsprop_losses) > 0:
-                            adam_final = adam_losses[-1]
-                            tarmsprop_final = tarmsprop_losses[-1]
-                            
-                            # Plot TarMSProp-SGD points in grey
-                            ax_expert.scatter(adam_final, tarmsprop_final, 
-                                            color='grey', alpha=0.4, s=30, 
-                                            marker='s', edgecolors='none')
-            
-            # Plot Adam vs Tanea per-expert losses with plasma colors
-            points_plotted = 0
-            for expert_idx in range(min(len(adam_per_expert), len(tanea_per_expert))):
-                if expert_idx in adam_per_expert and expert_idx in tanea_per_expert:
-                    adam_losses = adam_per_expert[expert_idx]
-                    tanea_losses = tanea_per_expert[expert_idx]
+        # Get all available optimizers in this result (excluding 'beta' and 'model')
+        available_optimizers = [k for k in result.keys() if k not in ['beta', 'model']]
+        
+        for optimizer_name in available_optimizers:
+            if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
+                timestamps = result[optimizer_name]['timestamps']
+                losses = result[optimizer_name]['losses']
+                
+                if len(timestamps) > 0 and len(losses) > 0:
+                    initial_loss = losses[0]
+                    final_loss = losses[-1]
+                    min_loss = jnp.min(losses)
                     
-                    # Only plot if we have data for both
-                    if len(adam_losses) > 0 and len(tanea_losses) > 0:
-                        # Use final losses for comparison
-                        adam_final = adam_losses[-1]
-                        tanea_final = tanea_losses[-1]
-                        
-                        # Get color based on log probability
-                        color_val = log_prob_normalized[expert_idx] if expert_idx < len(log_prob_normalized) else 0.5
-                        color = plt.cm.plasma(color_val)
-                        
-                        # Plot point with color based on expert selection probability
-                        ax_expert.scatter(adam_final, tanea_final, 
-                                        color=color, alpha=0.8, s=60, 
-                                        edgecolors='black', linewidth=0.5)
-                        points_plotted += 1
-            
-            print(f"    {tanea_opt}: Plotted {points_plotted} points")
-            
-            # Add diagonal line for reference (equal performance)
-            if len(adam_per_expert) > 0 and len(tanea_per_expert) > 0:
-                # Get range for diagonal line
-                all_adam_finals = [adam_per_expert[j][-1] for j in adam_per_expert.keys() if len(adam_per_expert[j]) > 0]
-                all_tanea_finals = [tanea_per_expert[j][-1] for j in tanea_per_expert.keys() if len(tanea_per_expert[j]) > 0]
-                
-                # Also include TarMSProp-SGD for range calculation
-                if len(tarmsprop_sgd_per_expert) > 0:
-                    all_tarmsprop_finals = [tarmsprop_sgd_per_expert[j][-1] for j in tarmsprop_sgd_per_expert.keys() if len(tarmsprop_sgd_per_expert[j]) > 0]
-                    all_tanea_finals.extend(all_tarmsprop_finals)
-                
-                if all_adam_finals and all_tanea_finals:
-                    min_loss = min(min(all_adam_finals), min(all_tanea_finals))
-                    max_loss = max(max(all_adam_finals), max(all_tanea_finals))
+                    # Create display name
+                    display_name = optimizer_name.upper().replace('_', ' ')
+                    if optimizer_name == 'tanea_g3zero':
+                        display_name = 'TANEA G3=0'
+                    elif optimizer_name == 'rmsprop_dana':
+                        display_name = 'RMSPROP+DANA'
                     
-                    ax_expert.plot([min_loss, max_loss], [min_loss, max_loss], 
-                                 'k--', alpha=0.5, linewidth=1, label='Equal Performance')
-            
-            # Add colorbar for plasma mapping (only for the first plot in each row)
-            if i == 0 and points_plotted > 0:
-                sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(vmin=0, vmax=1))
-                sm.set_array([])
-                cbar = plt.colorbar(sm, ax=ax_expert, fraction=0.05, pad=0.04)
-                cbar.set_label('Log Expert Selection Probability\n(normalized)', fontsize=8)
-                
-                # Set colorbar ticks
-                cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
-                # Map back to actual log probability values
-                actual_log_probs = log_prob_min + np.array([0, 0.25, 0.5, 0.75, 1.0]) * (log_prob_max - log_prob_min)
-                cbar.set_ticklabels([f'{val:.1f}' for val in actual_log_probs])
-            
-            # Add legend with custom elements
-            legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='purple', 
-                          markersize=8, alpha=0.8, markeredgecolor='black', linewidth=0,
-                          label=f'{tanea_label}'),
-                plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='grey', 
-                          markersize=6, alpha=0.4, linewidth=0,
-                          label='TarMSProp-SGD'),
-                plt.Line2D([0], [0], color='black', linestyle='--', alpha=0.5,
-                          label='Equal Performance')
-            ]
-            ax_expert.legend(handles=legend_elements, fontsize=8, loc='upper left')
-            
-            ax_expert.set_xlabel('Adam Final Loss')
-            ax_expert.set_ylabel(f'{tanea_label} Final Loss')
-            ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
-            ax_expert.grid(True, alpha=0.3)
-            ax_expert.set_xscale('log')
-            ax_expert.set_yscale('log')
-        else:
-            # Debug: Print why we're not plotting
-            print(f"  {tanea_opt}: Not plotting - tanea_opt in result: {tanea_opt in result}")
-            if tanea_opt in result:
-                print(f"    per_expert_losses in result[{tanea_opt}]: {'per_expert_losses' in result[tanea_opt]}")
-            
-            # Show empty plot message
-            ax_expert.text(0.5, 0.5, f'No per-expert data\nfor {tanea_label}', 
-                         transform=ax_expert.transAxes, ha='center', va='center',
-                         fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
-            ax_expert.set_xlabel('Adam Final Loss')
-            ax_expert.set_ylabel(f'{tanea_label} Final Loss')
-            ax_expert.set_title(f'{tanea_label} vs Adam Per-Expert Losses\nβ={beta}')
-
-plt.tight_layout()
-
-# Save combined figure
-beta_str = "_".join([f"beta{beta}" for beta in BETA_LIST])
-combined_filename = f"label_noise_combined_analysis_M{M}_D{D}_zeta{ZETA}_dof{STUDENT_T_DOF}_sigma{SIGMA}_{beta_str}_steps{STEPS}.pdf"
-combined_filepath = f"./results/{combined_filename}"
-plt.savefig(combined_filepath, dpi=300, bbox_inches='tight')
-print(f"Combined analysis figure saved to: {combined_filepath}")
-
-plt.show()
-
-# Visualization: Tau order statistics evolution
-fig, axes = plt.subplots(2, len(moe_results), figsize=(6 * len(moe_results), 10))
-if len(moe_results) == 1:
-    axes = axes.reshape(2, 1)
-
-for i, result in enumerate(moe_results):
-    beta = result['beta']
-    
-    # Plot second-moment tau statistics (top row)
-    if 'tau_statistics' in result['tanea']:
-        tau_times = result['tanea']['tau_statistics']['timestamps']
-        tau_order_stats = result['tanea']['tau_statistics']['tau_order_statistics']
+                    print(f"  {display_name}:")
+                    print(f"    Initial loss: {initial_loss:.6f}")
+                    print(f"    Final loss: {final_loss:.6f}")
+                    print(f"    Min loss: {min_loss:.6f}")
+                    print(f"    Total improvement: {initial_loss - final_loss:.6f}")
         
-        # Check if reversed order statistics are available
-        tau_reversed_order_stats = result['tanea']['tau_statistics'].get('tau_reversed_order_statistics', None)
-        
-        if len(tau_order_stats) > 0:
-            ax = axes[0, i]  # Top row for second-moment tau
-            
-            # Create color map for time evolution
-            n_timestamps = len(tau_times)
-            colors = plt.cm.plasma(np.linspace(0, 0.8, n_timestamps))
-            
-            # Find overall max and min for y-axis range (include both regular and reversed stats)
-            all_order_stats = []
-            for order_stats in tau_order_stats:
-                if len(order_stats) > 0:
-                    all_order_stats.extend(order_stats)
-            
-            # Also include reversed order statistics if available
-            if tau_reversed_order_stats:
-                for order_stats in tau_reversed_order_stats:
-                    if len(order_stats) > 0:
-                        all_order_stats.extend(order_stats)
-            
-            if all_order_stats:
-                max_tau = max(all_order_stats)
-                min_tau_plot = max_tau * 1e-5  # 5 orders of magnitude lower
-                
-                # Plot largest order statistics for each timestamp
-                for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
-                    if len(order_stats) > 0:
-                        # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
-                        k_values = np.arange(len(order_stats))
-                        
-                        # Filter order stats to only show those within our range
-                        valid_mask = order_stats >= min_tau_plot
-                        if np.any(valid_mask):
-                            filtered_k = 1.1**(k_values[valid_mask])
-                            filtered_stats = order_stats[valid_mask]
-                            
-                            ax.scatter(filtered_k, filtered_stats, 
-                                     color=colors[t_idx], alpha=0.7, s=20)
-                
-                # Plot smallest order statistics if available (same color scheme)
-                if tau_reversed_order_stats:
-                    for t_idx, (timestamp, reversed_order_stats) in enumerate(zip(tau_times, tau_reversed_order_stats)):
-                        if len(reversed_order_stats) > 0:
-                            # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
-                            k_values = np.arange(len(reversed_order_stats))
-                            
-                            # Filter order stats to only show those within our range
-                            valid_mask = reversed_order_stats >= min_tau_plot
-                            if np.any(valid_mask):
-                                filtered_k = 1.1**(k_values[valid_mask])
-                                filtered_stats = reversed_order_stats[valid_mask]
-                                
-                                ax.scatter(filtered_k, filtered_stats, 
-                                         color=colors[t_idx], alpha=0.7, s=20)
-                
-                # Set y-axis limits
-                ax.set_ylim(min_tau_plot, max_tau * 1.1)
-            
-            ax.set_xscale('log')
-            ax.set_yscale('log')
-            ax.set_xlabel('k (order statistic index)')
-            ax.set_ylabel('τ_k')
-            ax.set_title(f'Second-Moment Tau Order Statistics Evolution with Label Noise\nβ={beta}, M={M}, D={D}, ζ={ZETA}\nStudent-t DOF={STUDENT_T_DOF}, σ={SIGMA}')
-            ax.grid(True, alpha=0.3)
-            
-            # Add colorbar to show time evolution
-            sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(vmin=0, vmax=0.8))
-            sm.set_array([])
-            
-            # Map timestamp indices to [0, 0.8] range
-            if n_timestamps > 1:
-                time_values = np.linspace(0, 0.8, n_timestamps)
-                actual_times = np.array(tau_times)
-                cbar = plt.colorbar(sm, ax=ax, fraction=0.05, pad=0.04)
-                
-                # Set colorbar ticks to show actual iteration numbers
-                tick_positions = np.linspace(0, 0.8, min(5, n_timestamps))
-                tick_labels = []
-                for pos in tick_positions:
-                    # Find closest timestamp index
-                    idx = int(pos / 0.8 * (n_timestamps - 1))
-                    tick_labels.append(f'{actual_times[idx]:.0f}')
-                
-                cbar.set_ticks(tick_positions)
-                cbar.set_ticklabels(tick_labels)
-                cbar.set_label('Training Iteration')
-    
-    # Plot first-moment tau statistics (bottom row)
-    if 'tau_statistics' in result['tanea_first_moment']:
-        tau_times = result['tanea_first_moment']['tau_statistics']['timestamps']
-        tau_order_stats = result['tanea_first_moment']['tau_statistics']['tau_order_statistics']
-        
-        # Check if reversed order statistics are available
-        tau_reversed_order_stats = result['tanea_first_moment']['tau_statistics'].get('tau_reversed_order_statistics', None)
-        
-        if len(tau_order_stats) > 0:
-            ax = axes[1, i]  # Bottom row for first-moment tau
-            
-            # Create color map for time evolution
-            n_timestamps = len(tau_times)
-            colors = plt.cm.plasma(np.linspace(0, 0.8, n_timestamps))
-            
-            # Find overall max and min for y-axis range (include both regular and reversed stats)
-            all_order_stats = []
-            for order_stats in tau_order_stats:
-                if len(order_stats) > 0:
-                    all_order_stats.extend(order_stats)
-            
-            # Also include reversed order statistics if available
-            if tau_reversed_order_stats:
-                for order_stats in tau_reversed_order_stats:
-                    if len(order_stats) > 0:
-                        all_order_stats.extend(order_stats)
-            
-            if all_order_stats:
-                max_tau = max(all_order_stats)
-                min_tau_plot = max_tau * 1e-5  # 5 orders of magnitude lower
-                
-                # Plot largest order statistics for each timestamp
-                for t_idx, (timestamp, order_stats) in enumerate(zip(tau_times, tau_order_stats)):
-                    if len(order_stats) > 0:
-                        # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
-                        k_values = np.arange(len(order_stats))
-                        
-                        # Filter order stats to only show those within our range
-                        valid_mask = order_stats >= min_tau_plot
-                        if np.any(valid_mask):
-                            filtered_k = 1.1**(k_values[valid_mask])
-                            filtered_stats = order_stats[valid_mask]
-                            
-                            ax.scatter(filtered_k, filtered_stats, 
-                                     color=colors[t_idx], alpha=0.7, s=20)
-                
-                # Plot smallest order statistics if available (same color scheme)
-                if tau_reversed_order_stats:
-                    for t_idx, (timestamp, reversed_order_stats) in enumerate(zip(tau_times, tau_reversed_order_stats)):
-                        if len(reversed_order_stats) > 0:
-                            # k values: 0, 1, 2, ..., max_k where (1.1)^k corresponds to order stat index
-                            k_values = np.arange(len(reversed_order_stats))
-                            
-                            # Filter order stats to only show those within our range
-                            valid_mask = reversed_order_stats >= min_tau_plot
-                            if np.any(valid_mask):
-                                filtered_k = 1.1**(k_values[valid_mask])
-                                filtered_stats = reversed_order_stats[valid_mask]
-                                
-                                ax.scatter(filtered_k, filtered_stats, 
-                                         color=colors[t_idx], alpha=0.7, s=20)
-                
-                # Set y-axis limits
-                ax.set_ylim(min_tau_plot, max_tau * 1.1)
-            
-            ax.set_xscale('log')
-            ax.set_yscale('log')
-            ax.set_xlabel('k (order statistic index)')
-            ax.set_ylabel('τ_k')
-            ax.set_title(f'First-Moment Tau Order Statistics Evolution with Label Noise\nβ={beta}, M={M}, D={D}, ζ={ZETA}\nStudent-t DOF={STUDENT_T_DOF}, σ={SIGMA}')
-            ax.grid(True, alpha=0.3)
-            
-            # Add colorbar to show time evolution
-            sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(vmin=0, vmax=0.8))
-            sm.set_array([])
-            
-            # Map timestamp indices to [0, 0.8] range
-            if n_timestamps > 1:
-                time_values = np.linspace(0, 0.8, n_timestamps)
-                actual_times = np.array(tau_times)
-                cbar = plt.colorbar(sm, ax=ax, fraction=0.05, pad=0.04)
-                
-                # Set colorbar ticks to show actual iteration numbers
-                tick_positions = np.linspace(0, 0.8, min(5, n_timestamps))
-                tick_labels = []
-                for pos in tick_positions:
-                    # Find closest timestamp index
-                    idx = int(pos / 0.8 * (n_timestamps - 1))
-                    tick_labels.append(f'{actual_times[idx]:.0f}')
-                
-                cbar.set_ticks(tick_positions)
-                cbar.set_ticklabels(tick_labels)
-                cbar.set_label('Training Iteration')
+        # Add tau statistics summary for tanea optimizers
+        print(f"\n  Tau Statistics Summary:")
+        tanea_opts_with_tau = [k for k in available_optimizers if k.startswith('tanea')]
+        for optimizer_name in tanea_opts_with_tau:
+            if optimizer_name in result and 'tau_statistics' in result[optimizer_name]:
+                tau_stats = result[optimizer_name]['tau_statistics']
+                if len(tau_stats['timestamps']) > 0:
+                    final_mean = tau_stats['tau_mean'][-1]
+                    final_std = tau_stats['tau_std'][-1]
+                    final_max = tau_stats['tau_max'][-1]
+                    final_order_stats = tau_stats['tau_order_statistics'][-1]
+                    
+                    # Create display name
+                    display_name = optimizer_name.upper().replace('_', ' ')
+                    if optimizer_name == 'tanea_g3zero':
+                        display_name = 'TANEA G3=0'
+                    
+                    print(f"    {display_name}:")
+                    print(f"      Final tau mean: {final_mean:.6f}")
+                    print(f"      Final tau std: {final_std:.6f}")
+                    print(f"      Final tau max: {final_max:.6f}")
+                    print(f"      Largest order statistics (first 5): {final_order_stats[:5] if len(final_order_stats) > 0 else []}")
+                    
+                    # Also show smallest order statistics if available
+                    if 'tau_reversed_order_statistics' in tau_stats and len(tau_stats['tau_reversed_order_statistics']) > 0:
+                        final_reversed_order_stats = tau_stats['tau_reversed_order_statistics'][-1]
+                        print(f"      Smallest order statistics (first 5): {final_reversed_order_stats[:5] if len(final_reversed_order_stats) > 0 else []}")
 
-plt.tight_layout()
+    print("\n" + "="*60)
+    print("Experiment completed!")
+    print("="*60)
 
-# Save the tau figure with descriptive name
-beta_str = "_".join([f"beta{beta}" for beta in BETA_LIST])
-tau_filename = f"label_noise_tau_order_stats_M{M}_D{D}_zeta{ZETA}_dof{STUDENT_T_DOF}_sigma{SIGMA}_{beta_str}_steps{STEPS}.pdf"
-tau_filepath = f"./results/{tau_filename}"
-plt.savefig(tau_filepath, dpi=300, bbox_inches='tight')
-print(f"Tau statistics figure saved to: {tau_filepath}")
 
-plt.show()
-
-# Summary statistics output
-print("\n" + "="*60)
-print("Label Noise Experiment Summary")
-print("="*60)
-
-for result in moe_results:
-    beta = result['beta']
-    print(f"\nβ = {beta}")
-    
-    for optimizer_name in ['tanea', 'tanea_theory', 'tanea_always_on', 'tanea_strong_clip', 'tanea_first_moment', 'tarmsprop_sgd', 'adam']:
-        if optimizer_name in result and 'timestamps' in result[optimizer_name] and 'losses' in result[optimizer_name]:
-            timestamps = result[optimizer_name]['timestamps']
-            losses = result[optimizer_name]['losses']
-            
-            if len(timestamps) > 0 and len(losses) > 0:
-                initial_loss = losses[0]
-                final_loss = losses[-1]
-                min_loss = jnp.min(losses)
-                
-                print(f"  {optimizer_name.upper()}:")
-                print(f"    Initial loss: {initial_loss:.6f}")
-                print(f"    Final loss: {final_loss:.6f}")
-                print(f"    Min loss: {min_loss:.6f}")
-                print(f"    Total improvement: {initial_loss - final_loss:.6f}")
-    
-    # Add tau statistics summary for tanea optimizers
-    print(f"\n  Tau Statistics Summary:")
-    for optimizer_name in ['tanea', 'tanea_theory', 'tanea_always_on', 'tanea_strong_clip', 'tanea_first_moment']:
-        if 'tau_statistics' in result[optimizer_name]:
-            tau_stats = result[optimizer_name]['tau_statistics']
-            if len(tau_stats['timestamps']) > 0:
-                final_mean = tau_stats['tau_mean'][-1]
-                final_std = tau_stats['tau_std'][-1]
-                final_max = tau_stats['tau_max'][-1]
-                final_order_stats = tau_stats['tau_order_statistics'][-1]
-                
-                print(f"    {optimizer_name.upper()}:")
-                print(f"      Final tau mean: {final_mean:.6f}")
-                print(f"      Final tau std: {final_std:.6f}")
-                print(f"      Final tau max: {final_max:.6f}")
-                print(f"      Largest order statistics (first 5): {final_order_stats[:5] if len(final_order_stats) > 0 else []}")
-                
-                # Also show smallest order statistics if available
-                if 'tau_reversed_order_statistics' in tau_stats and len(tau_stats['tau_reversed_order_statistics']) > 0:
-                    final_reversed_order_stats = tau_stats['tau_reversed_order_statistics'][-1]
-                    print(f"      Smallest order statistics (first 5): {final_reversed_order_stats[:5] if len(final_reversed_order_stats) > 0 else []}")
-
-print("\n" + "="*60)
-print("Experiment completed!")
-print("="*60) 
+if __name__ == "__main__":
+    main()
