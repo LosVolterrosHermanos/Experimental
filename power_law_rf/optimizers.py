@@ -280,8 +280,10 @@ def tanea_optimizer(
         g3_momentum_term = lambda u, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
     elif momentum_flavor == "strong-clip":
         g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))/(v+epsilon**2)
+    elif momentum_flavor == "mk2":
+        g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))*tau_reg(tau, t)/(v+epsilon**2)
     else:
-        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip' or 'theory'")  
+        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'always-on', 'strong-clip', or 'mk2'")  
 
     def init_fn(params):
 

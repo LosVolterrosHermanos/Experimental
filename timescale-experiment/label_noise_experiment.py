@@ -74,8 +74,10 @@ def parse_args():
     parser.add_argument("--enable_tanea_always_on", action="store_true", default=True, help="Enable Tanea (always-on) optimizer")
     parser.add_argument("--disable_tanea_always_on", action="store_true", help="Disable Tanea (always-on) optimizer")
     parser.add_argument("--enable_tanea_strong_clip", action="store_true", help="Enable Tanea (strong-clip) optimizer")
-    parser.add_argument("--enable_tanea_first_moment", action="store_true", default=True, help="Enable Tanea (first-moment) optimizer")
-    parser.add_argument("--disable_tanea_first_moment", action="store_true", help="Disable Tanea (first-moment) optimizer")
+    parser.add_argument("--enable_tanea_first_moment", action="store_true", help="Enable Tanea (first-moment) optimizer")
+    parser.add_argument("--disable_tanea_first_moment", action="store_true", default=True, help="Disable Tanea (first-moment) optimizer")
+    parser.add_argument("--enable_tanea_mk2", action="store_true", default=True, help="Enable Tanea (mk2) optimizer")
+    parser.add_argument("--disable_tanea_mk2", action="store_true", help="Disable Tanea (mk2) optimizer")
     parser.add_argument("--enable_tanea_g3zero", action="store_true", default=True, help="Enable Tanea G3=0 (formerly TarMSProp-SGD) optimizer")
     parser.add_argument("--disable_tanea_g3zero", action="store_true", help="Disable Tanea G3=0 optimizer")
     parser.add_argument("--enable_rmsprop_dana", action="store_true", default=True, help="Enable RMSprop+Dana optimizer")
@@ -488,6 +490,7 @@ def main():
     enable_tanea_always_on = args.enable_tanea_always_on and not args.disable_tanea_always_on
     enable_tanea_strong_clip = args.enable_tanea_strong_clip
     enable_tanea_first_moment = args.enable_tanea_first_moment and not args.disable_tanea_first_moment
+    enable_tanea_mk2 = args.enable_tanea_mk2 and not args.disable_tanea_mk2
     enable_tanea_g3zero = args.enable_tanea_g3zero and not args.disable_tanea_g3zero
     enable_rmsprop_dana = args.enable_rmsprop_dana and not args.disable_rmsprop_dana
     enable_adam = args.enable_adam and not args.disable_adam
@@ -506,7 +509,7 @@ def main():
     print(f"Training parameters: STEPS={args.steps}, BATCH_SIZE={args.batch_size}")
     print(f"Label noise parameters: Student-t DOF={args.student_t_dof}, σ={args.sigma}")
     print(f"Enabled optimizers: Tanea={enable_tanea}, TaneaTheory={enable_tanea_theory}, TaneaAlwaysOn={enable_tanea_always_on}")
-    print(f"                   TaneaStrongClip={enable_tanea_strong_clip}, TaneaFirstMoment={enable_tanea_first_moment}")
+    print(f"                   TaneaStrongClip={enable_tanea_strong_clip}, TaneaFirstMoment={enable_tanea_first_moment}, TaneaMk2={enable_tanea_mk2}")
     print(f"                   TaneaG3Zero={enable_tanea_g3zero}, RMSpropDana={enable_rmsprop_dana}, Adam={enable_adam}")
     print(f"Results directory: {args.results_dir}")
     print("="*60)
@@ -556,6 +559,10 @@ def main():
         if enable_tanea_first_moment:
             tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
             optimizers_dict['tanea_first_moment'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, tau_flavor="first-moment")
+        
+        if enable_tanea_mk2:
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['tanea_mk2'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="mk2")
         
         if enable_tanea_g3zero:
             tanea_g3zero_hparams = get_tarmsprop_sgd_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
@@ -617,6 +624,8 @@ def main():
             enabled_tanea_opts.append(('tanea_strong_clip', 'Tanea (Strong-Clip)'))
         if enable_tanea_first_moment:
             enabled_tanea_opts.append(('tanea_first_moment', 'Tanea (First-Moment)'))
+        if enable_tanea_mk2:
+            enabled_tanea_opts.append(('tanea_mk2', 'Tanea (MK2)'))
         if enable_rmsprop_dana:
             enabled_tanea_opts.append(('rmsprop_dana', 'RMSprop+Dana'))
 
@@ -639,6 +648,7 @@ def main():
                 'tanea_always_on': 'purple', 
                 'tanea_strong_clip': 'brown', 
                 'tanea_first_moment': 'pink', 
+                'tanea_mk2': 'magenta',  # New mk2 optimizer
                 'tanea_g3zero': 'blue',  # Renamed from tarmsprop_sgd
                 'rmsprop_dana': 'darkred',  # New optimizer
                 'adam': 'green'
