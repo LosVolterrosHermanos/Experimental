@@ -464,18 +464,21 @@ def main():
     optimizers_dict['tanea_original'] = tanea_optimizer(base_tanea_hparams.g2, base_tanea_hparams.g3, base_tanea_hparams.delta, momentum_flavor="mk2")
     
     # 2. Schedule-MK1: Cosine decay for both g2 and g3
-    HALFWAY = int(args.steps * 0.01 * 0.1)
-    FULLWAY = int(args.steps * 0.01)
-    linear_decay = optax.linear_schedule(1.0, 0.1, FULLWAY,HALFWAY)
-    g2_mk1 = lambda t : base_tanea_hparams.g2(t) * linear_decay(t)
-    g3_mk1 = lambda t : base_tanea_hparams.g3(t) * (linear_decay(t)**2)
-    optimizers_dict['tanea_schedule_mk1'] = tanea_optimizer(g2_mk1, g3_mk1, base_tanea_hparams.delta, momentum_flavor="mk2")
+    log_decay = lambda t : 1.0/(1.0+jnp.log(1.0 + t))
+    PARTWAY = int(args.steps * 0.1)
+    FULLWAY = int(args.steps) 
+    linear_decay = optax.linear_schedule(1.0, 0.0, FULLWAY,PARTWAY)
+    g2_mk1 = lambda t : base_tanea_hparams.g2(t)
+    g3_mk1 = lambda t : base_tanea_hparams.g3(t)*log_decay(t)
+    optimizers_dict['tanea_schedule_mk1'] = optax.chain(
+        tanea_optimizer(g2_mk1, g3_mk1, base_tanea_hparams.delta, momentum_flavor="mk2"), 
+        optax.scale_by_schedule(linear_decay)
+    )
     
     # 3. Schedule-MK2: Cosine decay for g2, linear decay to 0 for g3
-    log_decay = lambda t : 1.0/(1.0+jnp.log(1.0 + t))
     #lindecay = optax.linear_schedule(1.0, 0.0, linear_decay_steps)
-    g2_mk2 = lambda t : base_tanea_hparams.g2(t) * (log_decay(t))
-    g3_mk2 = lambda t : base_tanea_hparams.g3(t) * (log_decay(t)**2)
+    g2_mk2 = lambda t : base_tanea_hparams.g2(t) * jnp.sqrt(log_decay(t))
+    g3_mk2 = lambda t : base_tanea_hparams.g3(t) * log_decay(t)
     optimizers_dict['tanea_schedule_mk2'] = tanea_optimizer(g2_mk2, g3_mk2, base_tanea_hparams.delta, momentum_flavor="mk2")
     
     # 4. Adam
