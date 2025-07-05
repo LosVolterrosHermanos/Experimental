@@ -656,7 +656,9 @@ def main():
                         if optimizer_name == 'tanea_g3zero':
                             display_name = 'TANEA G3=0'
                         elif optimizer_name == 'rmsprop_dana':
-                            display_name = 'RMSPROP+DANA'
+                            display_name = f'RMSPROP+DANA (β₂={args.adam_beta2})'
+                        elif optimizer_name == 'adam':
+                            display_name = f'ADAM (β₁=0.0, β₂={args.adam_beta2})'
                         
                         ax.loglog(timestamps, losses, 'o-', 
                                  color=optimizer_colors.get(optimizer_name, 'black'), 
