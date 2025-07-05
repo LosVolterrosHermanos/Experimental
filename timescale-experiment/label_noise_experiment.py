@@ -81,6 +81,7 @@ def parse_args():
     parser.add_argument("--disable_rmsprop_dana", action="store_true", help="Disable RMSprop+Dana optimizer")
     parser.add_argument("--enable_adam", action="store_true", default=True, help="Enable Adam optimizer")
     parser.add_argument("--disable_adam", action="store_true", help="Disable Adam optimizer")
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="Adam beta2 parameter (also used for RMSprop decay in RMSprop+Dana)")
     
     # Output parameters
     parser.add_argument("--results_dir", type=str, default="results", help="Directory to store results")
@@ -433,7 +434,7 @@ def get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, t
     return 0.5*g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)*tanea_lr_scalar
 
 
-def get_rmsprop_dana_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
+def get_rmsprop_dana_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, adam_beta2):
     """Get RMSprop+Dana optimizer with hyperparameters based on Tanea/Adam settings."""
     # Get Adam LR for Dana g2
     adam_lr = get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent)
@@ -442,7 +443,7 @@ def get_rmsprop_dana_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2,
     # tanea_hparams = get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent)
     
     # RMSprop decay (same as Adam beta2)
-    rms_decay = 0.999
+    rms_decay = adam_beta2
     
     # Dana parameters
     dana_g2 = adam_lr
@@ -559,10 +560,10 @@ def main():
             optimizers_dict['tanea_g3zero'] = tanea_optimizer(tanea_g3zero_hparams.g2, tanea_g3zero_hparams.g3, tanea_g3zero_hparams.delta)
         
         if enable_rmsprop_dana:
-            optimizers_dict['rmsprop_dana'] = get_rmsprop_dana_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            optimizers_dict['rmsprop_dana'] = get_rmsprop_dana_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.adam_beta2)
         
         if enable_adam:
-            optimizers_dict['adam'] = optax.adam(get_adam_lr(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent), b1=0.0)
+            optimizers_dict['adam'] = optax.adam(get_adam_lr(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent), b1=0.0, b2=args.adam_beta2)
 
         # Run training experiments for enabled optimizers
         results_dict = {'beta': beta, 'model': model}
