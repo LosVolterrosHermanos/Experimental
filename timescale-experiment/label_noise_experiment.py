@@ -48,10 +48,10 @@ D = 500   # Parameter dimension
 
 # MoE parameters
 M = 100  # Number of experts for general MoE
-ZETA = 2.0  # Power-law exponent for expert selection
+ZETA = 0.5  # Power-law exponent for expert selection
 
 # Training parameters
-STEPS = 1000
+STEPS = 125000
 DT = 1e-3
 G2_SCALE = 0.2
 G3_OVER_G2 = 0.01
@@ -60,8 +60,8 @@ TANEA_LR_SCALAR = 1E-2
 TANEA_GLOBAL_EXPONENT = 0.0
 
 # Label noise parameters
-STUDENT_T_DOF = 6.0  # Degrees of freedom for student-t distribution
-SIGMA = 0.0  # Scaling factor for the noise
+STUDENT_T_DOF = 3.0  # Degrees of freedom for student-t distribution
+SIGMA = 0.1  # Scaling factor for the noise
 
 
 def compute_tau_order_statistics(tau_vector):
