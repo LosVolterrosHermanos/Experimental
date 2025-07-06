@@ -355,8 +355,12 @@ def main():
     # Initialize datasets using the new utility function
     data_root = os.path.expanduser("../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT")
     if config["disable_validation"]:
-        # Only create training dataset
-        train_dataset = FineWebDataset(data_root, max_tokens=None)
+        # Only create training dataset - use create_fineweb_datasets but ignore validation
+        train_dataset, _ = create_fineweb_datasets(
+            data_root, 
+            val_max_tokens=config["val_max_tokens"],
+            val_files_count=1
+        )
         val_dataset = None
     else:
         train_dataset, val_dataset = create_fineweb_datasets(
