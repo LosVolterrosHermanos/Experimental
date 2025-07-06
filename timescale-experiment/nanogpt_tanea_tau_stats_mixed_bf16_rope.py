@@ -227,6 +227,11 @@ def parse_args():
         choices=["naive", "xla", "cudnn"],
         help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
     )
+    # Validation parameters
+    parser.add_argument(
+        "--disable_validation", action="store_true",
+        help="Disable validation loss computation for faster training"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -291,6 +296,7 @@ def main():
         "linear_decay_end": args.linear_decay_end,
         "rope_base": args.rope_base,
         "attention_implementation": args.attention_implementation,
+        "disable_validation": args.disable_validation,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -336,6 +342,7 @@ def main():
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
+    logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
     logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']})")
     logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
@@ -347,11 +354,16 @@ def main():
     
     # Initialize datasets using the new utility function
     data_root = os.path.expanduser("../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT")
-    train_dataset, val_dataset = create_fineweb_datasets(
-        data_root, 
-        val_max_tokens=config["val_max_tokens"],
-        val_files_count=1
-    )
+    if config["disable_validation"]:
+        # Only create training dataset
+        train_dataset = FineWebDataset(data_root, max_tokens=None)
+        val_dataset = None
+    else:
+        train_dataset, val_dataset = create_fineweb_datasets(
+            data_root, 
+            val_max_tokens=config["val_max_tokens"],
+            val_files_count=1
+        )
     
     # Create training iterator
     train_iterator = train_dataset.iterate_once(config["batch_size"], config["seq_len"])
@@ -403,8 +415,11 @@ def main():
         
         # Log metrics at specified steps
         if step in LOG_STEPS:
-            # Evaluate validation loss
-            val_loss = evaluate_validation_loss(state, val_dataset, config, config["val_steps"])
+            # Evaluate validation loss (if enabled)
+            if config["disable_validation"]:
+                val_loss = float('nan')  # Use NaN to indicate disabled validation
+            else:
+                val_loss = evaluate_validation_loss(state, val_dataset, config, config["val_steps"])
             
             total_tokens = step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(step)
@@ -429,7 +444,10 @@ def main():
             average_tokens_per_second = total_tokens / elapsed
             logger.info(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
             logger.info(f"  Train Loss: {loss:.6f}")
-            logger.info(f"  Val Loss: {val_loss:.6f}")
+            if config["disable_validation"]:
+                logger.info(f"  Val Loss: disabled")
+            else:
+                logger.info(f"  Val Loss: {val_loss:.6f}")
             logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             if tau_stats:
@@ -493,7 +511,7 @@ def main():
         'num_params': num_params,
         'precision': 'mixed_bfloat16_rope',
         'final_train_loss': float(loss),
-        'final_val_loss': float(val_loss) if 'val_loss' in locals() else None
+        'final_val_loss': float(val_loss) if 'val_loss' in locals() and not config["disable_validation"] else None
     }
     
     with open(checkpoint_filename, 'wb') as f:
