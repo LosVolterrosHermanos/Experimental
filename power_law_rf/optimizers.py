@@ -248,7 +248,8 @@ def tanea_optimizer(
     effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
     quarter_root_tau_reg = lambda tau, t : jnp.power(tau_reg(tau, t),0.25)
 
-
+    ## After removing gradient clipping in commit 70fba51, the gpt shows consistent training instabilities, suggesting that some amount of gradient clipping is needed.  The following command is applied post-v-tau updates, but before the m-update.  Clipping to a fixed multiple (4x) of the standard deviation is optimal in contexts where the standard deviation exists.  The 4x in principle should be tuned.
+    gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.25*jnp.abs(u)*jnp.sqrt(tau_reg(tau, t)/v))
 
     tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
     if tau_flavor == "second-moment":
@@ -271,7 +272,7 @@ def tanea_optimizer(
     ## 3. The "always-on" version allows momentum updates to always occur.  Since $m$ is effectiely scaled by the time-scale $p$, we expect to update (1/p) times between g2 updates.  Hence in mean this should behave the same way as the 'theory' version, but we expect it to be less stable.  This is the same as what is used for the 'g2' pure gradient term.
     ## 4. The "strong-clip" version is similar to the 'effective-clip'  This is actually a misnomer.  Effective-clip penalizes large 'u' more strongly than strong-clip.
     ## 5. The "mk2" version scales down the momentum term by a factor of sqrt(tau_reg), which accounts for higher noise in the low-probability directions, but is akin to the 'strong-clip' version.
-    ## 6. The "mk3" version includes the scaled-down momentum from mk2, but also includes the implied clipping behavior of mk2.
+    ## 6. The "mk3" version includes the scaled-down momentum from mk2, but also includes the implied clipping behavior of mk2.  The "mk2" version had uncontrolled loss spikes on nanogpt, which do not appear in the 'effective-clip' version.
     g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     # Create lambda function for g3 momentum term based on flavor
     if momentum_flavor == "effective-clip":
@@ -305,12 +306,6 @@ def tanea_optimizer(
         new_beta_m = beta_m(state.count)
         new_beta_v = beta_v(state.count)
 
-        new_m = jax.tree.map(
-            lambda m,u : None if m is None else m*(1-new_beta_m) + newg1*u,
-            state.m,
-            updates,
-            is_leaf=lambda x: x is None,
-        )
         new_v = jax.tree.map(
             lambda v,u : None if v is None else v*(1-new_beta_v) + new_beta_v*(u**2),
             state.v,
@@ -324,8 +319,23 @@ def tanea_optimizer(
             updates,
             new_v,
             is_leaf=lambda x: x is None,
-            )
+        )
         
+        updates = jax.tree.map(
+            lambda u,v,tau : gradient_clipper(u,v,tau,state.count),
+            updates,
+            new_v,
+            new_tau,
+            is_leaf=lambda x: x is None,
+        )
+
+        new_m = jax.tree.map(
+            lambda m,u : None if m is None else m*(1-new_beta_m) + newg1*u,
+            state.m,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
 
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
