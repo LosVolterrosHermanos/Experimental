@@ -269,7 +269,9 @@ def tanea_optimizer(
     ## 1. The "theory" version now takes the product of these factors.
     ## 2. The "effective-clip" version uses a more conservative estimate.  In the theory version we can represent the denominator as (a+b)*a, where a = sqrt(v)+epsilon and b = abs(u)*sqrt(tau_reg).  The 'effective-clip' version replaces this by (a+b)**2, which is always larger and moreover, is substantially larger if $b^2 \gg a^2$.  This can occur in settings where individual gradients have relatively heavy tails, in which case we expect the 'effective-clip' version to be more stable.
     ## 3. The "always-on" version allows momentum updates to always occur.  Since $m$ is effectiely scaled by the time-scale $p$, we expect to update (1/p) times between g2 updates.  Hence in mean this should behave the same way as the 'theory' version, but we expect it to be less stable.  This is the same as what is used for the 'g2' pure gradient term.
-    ## 4. The "strong-clip" version is similar to the 'effective-clip'
+    ## 4. The "strong-clip" version is similar to the 'effective-clip'  This is actually a misnomer.  Effective-clip penalizes large 'u' more strongly than strong-clip.
+    ## 5. The "mk2" version scales down the momentum term by a factor of sqrt(tau_reg), which accounts for higher noise in the low-probability directions, but is akin to the 'strong-clip' version.
+    ## 6. The "mk3" version includes the scaled-down momentum from mk2, but also includes the implied clipping behavior of mk2.
     g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     # Create lambda function for g3 momentum term based on flavor
     if momentum_flavor == "effective-clip":
@@ -283,6 +285,8 @@ def tanea_optimizer(
         g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))/(v+epsilon**2)
     elif momentum_flavor == "mk2":
         g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u)*root_tau_reg(tau, t),(jnp.sqrt(v)))/(v+epsilon**2)
+    elif momentum_flavor == "mk3":
+        g3_momentum_term = lambda u, v, tau, t: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     else:
         raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'always-on', 'strong-clip', or 'mk2'")  
 
