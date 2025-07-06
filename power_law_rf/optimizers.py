@@ -248,9 +248,6 @@ def tanea_optimizer(
     effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
     quarter_root_tau_reg = lambda tau, t : jnp.power(tau_reg(tau, t),0.25)
 
-    ## After removing gradient clipping in commit 70fba51, the gpt shows consistent training instabilities, suggesting that some amount of gradient clipping is needed.  The following command is applied post-v-tau updates, but before the m-update.  Clipping to a fixed multiple (4x) of the standard deviation is optimal in contexts where the standard deviation exists.  The 4x in principle should be tuned.
-    #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.abs(u)*jnp.sqrt(tau_reg(tau, t)/(v+epsilon**2)))
-    #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.sqrt(jnp.sum(u*u*tau_reg(tau, t))/jnp.sum(v+epsilon**2)))
 
     tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
     if tau_flavor == "second-moment":
@@ -259,6 +256,16 @@ def tanea_optimizer(
         tau_updater = lambda tau,u,v,t : jnp.abs(u)*(quarter_root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(quarter_root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)
     else:
         raise ValueError(f"Unknown tau_flavor: {tau_flavor}. Must be 'second-moment' or 'first-moment'")
+
+
+    ## After removing gradient clipping in commit 70fba51, the gpt shows consistent training instabilities, suggesting that some amount of gradient clipping is needed.  The following command is applied post-v-tau updates, but before the m-update.  Clipping to a fixed multiple (4x) of the standard deviation is optimal in contexts where the standard deviation exists.  The 4x in principle should be tuned.
+    #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.abs(u)*jnp.sqrt(tau_reg(tau, t)/(v+epsilon**2)))
+    #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.sqrt(jnp.sum(u*u*tau_reg(tau, t))/jnp.sum(v+epsilon**2)))
+
+    ##This is the default g2_momentum_term.
+    g2_momentum_term = lambda u, md, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+    #This furthermore clips the gradient at the level appropriate to the SNR of the problem.
+    g2_momentum_term = lambda u, md, v, tau, t: (root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon)))*jnp.minimum(1.0,2.0*jnp.abs(md)/(jnp.sqrt(v)*jnp.abs(u)+epsilon))
 
     ## The g3_momentum_term will be used to multiply the first moment estimator $m$ and the schedule.  The standard Adam scaling would simply output 1/(sqrt(v)+epsilon), times a learning rate, which is here g3(effective_time(tau, t)).  
     ## Now, in the sparse-in-time settig, where updates occur with some probability $p$, we ideally have something like $m = p*E(g)$, where $E(g)$ is some partial expectation of the gradient achieved by time averaging.  This $E(g)$ is a 'DANA-type' momentum estimate.  The $v = p*E(g^2)$ with the same sense of partial expectation.  The $tau$ is an approximation of $p$, and $\tau_reg$ stabilizes the estimate.  
@@ -341,7 +348,7 @@ def tanea_optimizer(
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 
-            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(u**2 * tau_reg(tau, state.count)+v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
+            else -1.0*(g2(effective_time(tau, state.count))*u*g2_momentum_term(u, m*new_beta_m, v, tau, state.count))-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
             #else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
             new_m,
             updates,
