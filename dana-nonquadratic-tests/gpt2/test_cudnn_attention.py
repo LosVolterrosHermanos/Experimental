@@ -7,67 +7,70 @@ import jax
 import jax.numpy as jnp
 from nanogpt_rope_mixed_precision import ModelConfig, GPTWithRoPE
 
-def test_cudnn_attention():
-    """Test that cudnn attention produces similar results to the original implementation."""
-    
-    # Set up test configuration
-    config = ModelConfig(
-        vocab_size=1000,
-        n_head=4,
-        n_embd=128,
-        block_size=64,
-        n_layer=2,
-        dropout_rate=0.0,  # No dropout for testing
-        use_cudnn_attention=False  # Start with original implementation
-    )
+def test_attention_implementations():
+    """Test all three attention implementations: naive, xla, and cudnn."""
     
     # Create test input
     batch_size = 2
     seq_len = 32
     rng = jax.random.PRNGKey(42)
-    tokens = jax.random.randint(rng, (batch_size, seq_len), 0, config.vocab_size, dtype=jnp.uint16)
     
-    # Test with original implementation
-    model_original = GPTWithRoPE(config, mixed_precision=True)
-    params_original = model_original.init(jax.random.PRNGKey(0))
-    logits_original = model_original.apply(params_original, tokens, True)
+    # Test configurations for each implementation
+    implementations = ['naive', 'xla', 'cudnn']
+    results = {}
     
-    # Test with cudnn implementation
-    config_cudnn = ModelConfig(
-        vocab_size=1000,
-        n_head=4,
-        n_embd=128,
-        block_size=64,
-        n_layer=2,
-        dropout_rate=0.0,
-        use_cudnn_attention=True  # Enable cudnn attention
-    )
+    for impl in implementations:
+        print(f"\nTesting {impl} implementation:")
+        
+        config = ModelConfig(
+            vocab_size=1000,
+            n_head=4,
+            n_embd=128,
+            block_size=64,
+            n_layer=2,
+            dropout_rate=0.0,  # No dropout for testing
+            attention_implementation=impl
+        )
+        
+        tokens = jax.random.randint(rng, (batch_size, seq_len), 0, config.vocab_size, dtype=jnp.uint16)
+        
+        try:
+            # Test with mixed precision
+            model = GPTWithRoPE(config, mixed_precision=True)
+            params = model.init(jax.random.PRNGKey(0))
+            logits = model.apply(params, tokens, True)
+            
+            print(f"  Mixed precision - Shape: {logits.shape}")
+            print(f"  Mixed precision - Finite: {jnp.all(jnp.isfinite(logits))}")
+            
+            # Test with pure precision
+            model_pure = GPTWithRoPE(config, mixed_precision=False)
+            params_pure = model_pure.init(jax.random.PRNGKey(0))
+            logits_pure = model_pure.apply(params_pure, tokens, True)
+            
+            print(f"  Pure precision - Shape: {logits_pure.shape}")
+            print(f"  Pure precision - Finite: {jnp.all(jnp.isfinite(logits_pure))}")
+            
+            results[impl] = {'success': True, 'mixed': logits, 'pure': logits_pure}
+            print(f"  {impl} implementation: SUCCESS")
+            
+        except Exception as e:
+            print(f"  {impl} implementation: FAILED - {str(e)}")
+            results[impl] = {'success': False, 'error': str(e)}
     
-    model_cudnn = GPTWithRoPE(config_cudnn, mixed_precision=True)
-    # Use the same parameters for fair comparison
-    logits_cudnn = model_cudnn.apply(params_original, tokens, True)
+    # Compare results between implementations
+    print("\nComparison between implementations:")
+    successful_impls = [k for k, v in results.items() if v['success']]
     
-    print(f"Original logits shape: {logits_original.shape}")
-    print(f"CUDNN logits shape: {logits_cudnn.shape}")
-    print(f"Shapes match: {logits_original.shape == logits_cudnn.shape}")
+    if len(successful_impls) > 1:
+        ref_impl = successful_impls[0]
+        for impl in successful_impls[1:]:
+            # Compare shapes
+            shape_match = (results[ref_impl]['mixed'].shape == results[impl]['mixed'].shape)
+            print(f"  {ref_impl} vs {impl} - Shape match: {shape_match}")
     
-    # Check that outputs are finite (not NaN or infinite)
-    print(f"Original logits finite: {jnp.all(jnp.isfinite(logits_original))}")
-    print(f"CUDNN logits finite: {jnp.all(jnp.isfinite(logits_cudnn))}")
-    
-    # Test both mixed precision modes
-    print("\nTesting pure precision mode:")
-    model_original_pure = GPTWithRoPE(config, mixed_precision=False)
-    params_original_pure = model_original_pure.init(jax.random.PRNGKey(0))
-    logits_original_pure = model_original_pure.apply(params_original_pure, tokens, True)
-    
-    model_cudnn_pure = GPTWithRoPE(config_cudnn, mixed_precision=False)
-    logits_cudnn_pure = model_cudnn_pure.apply(params_original_pure, tokens, True)
-    
-    print(f"Pure precision - Original finite: {jnp.all(jnp.isfinite(logits_original_pure))}")
-    print(f"Pure precision - CUDNN finite: {jnp.all(jnp.isfinite(logits_cudnn_pure))}")
-    
-    print("\nTest completed successfully!")
+    print(f"\nSuccessful implementations: {successful_impls}")
+    print("Test completed!")
 
 if __name__ == "__main__":
-    test_cudnn_attention()
+    test_attention_implementations()

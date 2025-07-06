@@ -36,7 +36,7 @@ class ModelConfig:
         n_layer: Number of transformer layers
         dropout_rate: Dropout probability
         rope_base: Base frequency for RoPE (default 10000.0 as in the paper)
-        use_cudnn_attention: Whether to use jax.nn.dot_product_attention with cudnn implementation
+        attention_implementation: Attention implementation to use ('naive', 'xla', 'cudnn')
     """
     vocab_size: int = 50257
     n_head: int = 12
@@ -45,7 +45,7 @@ class ModelConfig:
     n_layer: int = 12
     dropout_rate: float = 0.1
     rope_base: float = 10000.0
-    use_cudnn_attention: bool = False
+    attention_implementation: str = 'naive'
 
 
 def create_rope_cache(seq_len: int, head_dim: int, base: float = 10000.0, dtype=jnp.float32):
@@ -213,8 +213,8 @@ class CausalSelfAttention(nn.Module):
             k = apply_rope(k, cos_cache, sin_cache)
 
         # Attention computation
-        if self.config.use_cudnn_attention:
-            # Use jax.nn.dot_product_attention with cudnn implementation
+        if self.config.attention_implementation in ['cudnn', 'xla']:
+            # Use jax.nn.dot_product_attention with specified implementation
             if self.mixed_precision:
                 # Mixed precision: use bfloat16 for attention computation
                 q_bf16 = q.astype(jnp.bfloat16)
@@ -224,17 +224,17 @@ class CausalSelfAttention(nn.Module):
                 y = jax.nn.dot_product_attention(
                     q_bf16, k_bf16, v_bf16,
                     is_causal=True,
-                    implementation='cudnn'
+                    implementation=self.config.attention_implementation
                 ).astype(jnp.float32)
             else:
                 # Pure precision mode
                 y = jax.nn.dot_product_attention(
                     q, k, v,
                     is_causal=True,
-                    implementation='cudnn'
+                    implementation=self.config.attention_implementation
                 )
         else:
-            # Fallback to original implementation
+            # Fallback to original naive implementation
             if self.mixed_precision:
                 # Mixed precision: matmul in bfloat16, other ops in float32
                 q_bf16 = q.astype(jnp.bfloat16)
