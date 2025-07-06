@@ -112,6 +112,17 @@ def parse_args():
         "--rope_base", type=float, default=10000.0,
         help="Base frequency for RoPE"
     )
+    # Attention implementation parameters
+    parser.add_argument(
+        "--attention_implementation", type=str, default="naive",
+        choices=["naive", "xla", "cudnn"],
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
+    )
+    # Validation parameters
+    parser.add_argument(
+        "--disable_validation", action="store_true",
+        help="Disable validation loss computation for faster training"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -169,6 +180,8 @@ def main():
         "beta2": args.beta2,
         "weight_decay": args.weight_decay,
         "rope_base": args.rope_base,
+        "attention_implementation": args.attention_implementation,
+        "disable_validation": args.disable_validation,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -192,13 +205,18 @@ def main():
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
-    model_config = ModelConfig(rope_base=config["rope_base"])
+    model_config = ModelConfig(
+        rope_base=config["rope_base"],
+        attention_implementation=config["attention_implementation"]
+    )
     model = GPTWithRoPE(model_config, mixed_precision=True, init_std=config["init_std"])
     params = model.init(key)
     num_params = count_params(params)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE positional embedding")
+    logger.info(f"Attention implementation: {config['attention_implementation']}")
+    logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
     
     # Initialize train state
     state = TrainState.create(
@@ -208,11 +226,20 @@ def main():
     
     # Initialize datasets using the new utility function
     data_root = os.path.expanduser("../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT")
-    train_dataset, val_dataset = create_fineweb_datasets(
-        data_root, 
-        val_max_tokens=config["val_max_tokens"],
-        val_files_count=1
-    )
+    if config["disable_validation"]:
+        # Only create training dataset - use create_fineweb_datasets but ignore validation
+        train_dataset, _ = create_fineweb_datasets(
+            data_root, 
+            val_max_tokens=config["val_max_tokens"],
+            val_files_count=1
+        )
+        val_dataset = None
+    else:
+        train_dataset, val_dataset = create_fineweb_datasets(
+            data_root, 
+            val_max_tokens=config["val_max_tokens"],
+            val_files_count=1
+        )
     
     # Create training iterator
     train_iterator = train_dataset.iterate_once(config["batch_size"], config["seq_len"])
@@ -242,8 +269,11 @@ def main():
         
         # Log metrics at specified steps
         if step in LOG_STEPS:
-            # Evaluate validation loss
-            val_loss = evaluate_validation_loss(state, val_dataset, config, config["val_steps"])
+            # Evaluate validation loss (if enabled)
+            if config["disable_validation"]:
+                val_loss = float('nan')  # Use NaN to indicate disabled validation
+            else:
+                val_loss = evaluate_validation_loss(state, val_dataset, config, config["val_steps"])
             
             total_tokens = step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(step)
@@ -255,13 +285,17 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
-            tqdm.write(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
-            tqdm.write(f"  Train Loss: {loss:.6f}")
-            tqdm.write(f"  Val Loss: {val_loss:.6f}")
-            tqdm.write(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
-            tqdm.write(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
-            tqdm.write(f"  LR: {config['lr']}, Beta1: {config['beta1']}, Beta2: {config['beta2']}, WD: {config['weight_decay']}")
-            tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
+            logger.info(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
+            logger.info(f"  Train Loss: {loss:.6f}")
+            if config["disable_validation"]:
+                logger.info(f"  Val Loss: disabled")
+            else:
+                logger.info(f"  Val Loss: {val_loss:.6f}")
+            logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
+            logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
+            logger.info(f"  LR: {config['lr']}, Beta1: {config['beta1']}, Beta2: {config['beta2']}, WD: {config['weight_decay']}")
+            logger.info(f"  Attention Implementation: {config['attention_implementation']}")
+            logger.info(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Save results
     results_data = {
@@ -277,7 +311,8 @@ def main():
         f"{config['results_dir']}/nanogpt_adamw_baseline_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
-        f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}.pkl"
+        f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
+        f"attn_{config['attention_implementation']}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
