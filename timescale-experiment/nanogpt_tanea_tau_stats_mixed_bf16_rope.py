@@ -237,6 +237,11 @@ def parse_args():
         "--grad_clip", type=float, default=2.0,
         help="Gradient clipping threshold (default: 2.0, set to 0 to disable)"
     )
+    # Checkpoint parameters
+    parser.add_argument(
+        "--disable_checkpoint", action="store_true",
+        help="Disable saving model weights checkpoint"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -303,6 +308,7 @@ def main():
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
         "grad_clip": args.grad_clip,
+        "disable_checkpoint": args.disable_checkpoint,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -509,31 +515,34 @@ def main():
     
     print(f"Results saved to {results_filename}")
     
-    # Save checkpoint of weights
-    checkpoint_dir = "weight-checkpoints"
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    
-    checkpoint_filename = (
-        f"{checkpoint_dir}/nanogpt_tanea_checkpoint_mixed_bf16_rope_{timestamp}_"
-        f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
-        f"seq_{config['seq_len']}_"
-        f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
-    )
-    
-    checkpoint_data = {
-        'params': state.params,
-        'config': config,
-        'num_params': num_params,
-        'precision': 'mixed_bfloat16_rope',
-        'final_train_loss': float(loss),
-        'final_val_loss': float(val_loss) if 'val_loss' in locals() and not config["disable_validation"] else None
-    }
-    
-    with open(checkpoint_filename, 'wb') as f:
-        pickle.dump(checkpoint_data, f)
-    
-    print(f"Checkpoint saved to {checkpoint_filename}")
+    # Save checkpoint of weights (if enabled)
+    if not config["disable_checkpoint"]:
+        checkpoint_dir = "weight-checkpoints"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        checkpoint_filename = (
+            f"{checkpoint_dir}/nanogpt_tanea_checkpoint_mixed_bf16_rope_{timestamp}_"
+            f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
+            f"seq_{config['seq_len']}_"
+            f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
+            f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
+        )
+        
+        checkpoint_data = {
+            'params': state.params,
+            'config': config,
+            'num_params': num_params,
+            'precision': 'mixed_bfloat16_rope',
+            'final_train_loss': float(loss),
+            'final_val_loss': float(val_loss) if 'val_loss' in locals() and not config["disable_validation"] else None
+        }
+        
+        with open(checkpoint_filename, 'wb') as f:
+            pickle.dump(checkpoint_data, f)
+        
+        print(f"Checkpoint saved to {checkpoint_filename}")
+    else:
+        print("Checkpoint saving disabled")
     
     return results_data
 
