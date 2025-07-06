@@ -344,7 +344,8 @@ def tanea_optimizer(
             is_leaf=lambda x: x is None,
         )
 
-
+        # This was used in an attempt to stabilize training without clipping.
+        #else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(u**2 * tau_reg(tau, state.count)+v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),    
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 

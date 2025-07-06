@@ -232,6 +232,11 @@ def parse_args():
         "--disable_validation", action="store_true",
         help="Disable validation loss computation for faster training"
     )
+    # Gradient clipping parameters
+    parser.add_argument(
+        "--grad_clip", type=float, default=2.0,
+        help="Gradient clipping threshold (default: 2.0, set to 0 to disable)"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -297,6 +302,7 @@ def main():
         "rope_base": args.rope_base,
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
+        "grad_clip": args.grad_clip,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -323,11 +329,15 @@ def main():
         linear_decay_schedule = optax.linear_schedule(1.0, config["linear_decay_end"], linear_decay_steps,linear_decay_start_step)
 
         optimizer = optax.chain(
+            optax.clip_by_global_norm(config["grad_clip"]),
             tanea,
             optax.scale_by_schedule(linear_decay_schedule)
         )
     else:
-        optimizer = tanea
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(config["grad_clip"]),
+            tanea
+        )
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -343,6 +353,7 @@ def main():
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
+    logger.info(f"Gradient clipping: {config['grad_clip']}")
     logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']})")
     logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
@@ -459,6 +470,7 @@ def main():
             logger.info(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
+            logger.info(f"  Gradient Clipping: {config['grad_clip']}")
             if config["enable_linear_decay"]:
                 logger.info(f"  Linear Decay: enabled (starting step: {config['linear_decay_start']*config['train_steps']}, end value: {config['linear_decay_end']})")
             else:
