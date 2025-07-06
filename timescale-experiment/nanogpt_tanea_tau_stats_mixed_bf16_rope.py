@@ -155,10 +155,6 @@ def parse_args():
         help="Number of validation steps"
     )
     parser.add_argument(
-        "--grad_clip", type=float, default=2.0,
-        help="Gradient clipping value"
-    )
-    parser.add_argument(
         "--init_std", type=float, default=0.02,
         help="Weight initialization standard deviation"
     )
@@ -199,6 +195,18 @@ def parse_args():
         "--momentum_flavor", type=str, default="effective-clip",
         choices=["effective-clip", "theory", "always-on", "strong-clip", "mk2"],
         help="Tanea momentum flavor"
+    )
+    parser.add_argument(
+        "--enable_linear_decay", action="store_true",
+        help="Enable linear decay schedule using optax.chain"
+    )
+    parser.add_argument(
+        "--linear_decay_start", type=float, default=0.1,
+        help="Fraction of training steps when linear decay starts (default: 0.1)"
+    )
+    parser.add_argument(
+        "--linear_decay_end", type=float, default=0.0,
+        help="Final value for linear decay (default: 0.0)"
     )
     # RoPE specific parameters
     parser.add_argument(
@@ -254,7 +262,6 @@ def main():
         "val_batch_size": args.val_batch_size,
         "val_max_tokens": val_max_tokens,
         "val_steps": args.val_steps,
-        "grad_clip": args.grad_clip,
         "init_std": args.init_std,
         "results_dir": args.results_dir,
         "tanea_g2": args.tanea_g2,
@@ -265,6 +272,9 @@ def main():
         "power_weight_decay": args.power_weight_decay,
         "weight_decay_ts": args.weight_decay_ts,
         "momentum_flavor": args.momentum_flavor,
+        "enable_linear_decay": args.enable_linear_decay,
+        "linear_decay_start": args.linear_decay_start,
+        "linear_decay_end": args.linear_decay_end,
         "rope_base": args.rope_base,
         "precision": "mixed_bfloat16_rope"
     }
@@ -283,11 +293,20 @@ def main():
     wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
     tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"])
 
-    tanea = optax.chain(
-        optax.clip_by_global_norm(config['grad_clip']),
-        tanea
-    )
-    optimizer = tanea
+    # Create optimizer chain with optional linear decay
+    if config["enable_linear_decay"]:
+        # Create linear decay schedule
+        linear_decay_start_step = int(config["linear_decay_start"] * config["train_steps"])
+        linear_decay_steps = config["train_steps"] - linear_decay_start_step
+        
+        linear_decay_schedule = optax.linear_schedule(1.0, config["linear_decay_end"], linear_decay_steps,linear_decay_start_step)
+
+        optimizer = optax.chain(
+            tanea,
+            optax.scale_by_schedule(linear_decay_schedule)
+        )
+    else:
+        optimizer = tanea
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -298,7 +317,7 @@ def main():
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
-    logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']}) with grad_clip={config['grad_clip']}")
+    logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']})")
     logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
     # Initialize train state
@@ -398,6 +417,10 @@ def main():
                 tqdm.write(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
             tqdm.write(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             tqdm.write(f"  Momentum Flavor: {config['momentum_flavor']}")
+            if config["enable_linear_decay"]:
+                tqdm.write(f"  Linear Decay: enabled (start: {config['linear_decay_start']}, end: {config['linear_decay_end']})")
+            else:
+                tqdm.write(f"  Linear Decay: disabled")
             tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Convert tau statistics lists to arrays
@@ -415,12 +438,16 @@ def main():
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
+    linear_decay_suffix = ""
+    if config["enable_linear_decay"]:
+        linear_decay_suffix = f"_linear_decay_{config['linear_decay_start']}_{config['linear_decay_end']}"
+    
     results_filename = (
         f"{config['results_dir']}/nanogpt_tanea_results_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
         f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}.pkl"
+        f"flavor_{config['momentum_flavor']}{linear_decay_suffix}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
@@ -437,7 +464,7 @@ def main():
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
         f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}.pkl"
+        f"flavor_{config['momentum_flavor']}{linear_decay_suffix}.pkl"
     )
     
     checkpoint_data = {
