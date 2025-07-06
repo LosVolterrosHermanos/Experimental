@@ -215,25 +215,28 @@ class CausalSelfAttention(nn.Module):
         # Attention computation
         if self.config.use_cudnn_attention:
             # Use jax.nn.dot_product_attention with cudnn implementation
-            # Create causal mask (1 for allowed positions, 0 for masked)
-            mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool_))[None, None, :, :]
+            # Create causal mask with -inf for masked positions
+            mask = jnp.tril(jnp.ones((T, T)))[None, None, :, :]
+            mask = jnp.where(mask, 0.0, float('-inf'))
             
             if self.mixed_precision:
                 # Mixed precision: use bfloat16 for attention computation
                 q_bf16 = q.astype(jnp.bfloat16)
                 k_bf16 = k.astype(jnp.bfloat16)
                 v_bf16 = v.astype(jnp.bfloat16)
+                mask_bf16 = mask.astype(jnp.bfloat16)
                 
                 y = jax.nn.dot_product_attention(
                     q_bf16, k_bf16, v_bf16,
-                    mask=mask,
+                    bias=mask_bf16,
                     implementation='cudnn'
                 ).astype(jnp.float32)
             else:
                 # Pure precision mode
+                mask_bf16 = mask.astype(jnp.bfloat16)
                 y = jax.nn.dot_product_attention(
                     q, k, v,
-                    mask=mask,
+                    bias=mask_bf16,
                     implementation='cudnn'
                 )
         else:
