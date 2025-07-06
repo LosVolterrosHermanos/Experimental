@@ -322,7 +322,7 @@ def tanea_optimizer(
         )
         
         updates = jax.tree.map(
-            lambda u,v,tau : gradient_clipper(u,v,tau,state.count),
+            lambda u,v,tau : u if v is None else gradient_clipper(u,v,tau,state.count),
             updates,
             new_v,
             new_tau,
