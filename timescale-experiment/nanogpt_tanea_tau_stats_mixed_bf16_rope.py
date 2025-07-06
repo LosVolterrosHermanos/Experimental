@@ -221,6 +221,12 @@ def parse_args():
         "--rope_base", type=float, default=10000.0,
         help="Base frequency for RoPE"
     )
+    # Attention implementation parameters
+    parser.add_argument(
+        "--attention_implementation", type=str, default="naive",
+        choices=["naive", "xla", "cudnn"],
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, val_steps=20):
@@ -284,6 +290,7 @@ def main():
         "linear_decay_start": args.linear_decay_start,
         "linear_decay_end": args.linear_decay_end,
         "rope_base": args.rope_base,
+        "attention_implementation": args.attention_implementation,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -318,13 +325,17 @@ def main():
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
-    model_config = ModelConfig(rope_base=config["rope_base"])
+    model_config = ModelConfig(
+        rope_base=config["rope_base"],
+        attention_implementation=config["attention_implementation"]
+    )
     model = GPTWithRoPE(model_config, mixed_precision=True, init_std=config["init_std"])
     params = model.init(key)
     num_params = count_params(params)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Optimizer: Tanea (momentum_flavor={config['momentum_flavor']})")
     logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
@@ -425,6 +436,7 @@ def main():
                 logger.info(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
             logger.info(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
+            logger.info(f"  Attention Implementation: {config['attention_implementation']}")
             if config["enable_linear_decay"]:
                 logger.info(f"  Linear Decay: enabled (starting step: {config['linear_decay_start']*config['train_steps']}, end value: {config['linear_decay_end']})")
             else:
@@ -455,7 +467,7 @@ def main():
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
         f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}{linear_decay_suffix}.pkl"
+        f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
@@ -472,7 +484,7 @@ def main():
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
         f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}{linear_decay_suffix}.pkl"
+        f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
     )
     
     checkpoint_data = {
