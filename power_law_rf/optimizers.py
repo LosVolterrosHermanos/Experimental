@@ -250,7 +250,7 @@ def tanea_optimizer(
 
     ## After removing gradient clipping in commit 70fba51, the gpt shows consistent training instabilities, suggesting that some amount of gradient clipping is needed.  The following command is applied post-v-tau updates, but before the m-update.  Clipping to a fixed multiple (4x) of the standard deviation is optimal in contexts where the standard deviation exists.  The 4x in principle should be tuned.
     #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.abs(u)*jnp.sqrt(tau_reg(tau, t)/(v+epsilon**2)))
-    gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.sqrt(jnp.sum(u*u*tau_reg(tau, t))/jnp.sum(v+epsilon**2)))
+    #gradient_clipper = lambda u,v,tau,t : u/jnp.maximum(1.0,0.125*jnp.sqrt(jnp.sum(u*u*tau_reg(tau, t))/jnp.sum(v+epsilon**2)))
 
     tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
     if tau_flavor == "second-moment":
@@ -322,13 +322,13 @@ def tanea_optimizer(
             is_leaf=lambda x: x is None,
         )
         
-        updates = jax.tree.map(
-            lambda u,v,tau : u if v is None else gradient_clipper(u,v,tau,state.count),
-            updates,
-            new_v,
-            new_tau,
-            is_leaf=lambda x: x is None,
-        )
+        # updates = jax.tree.map(
+        #     lambda u,v,tau : u if v is None else gradient_clipper(u,v,tau,state.count),
+        #     updates,
+        #     new_v,
+        #     new_tau,
+        #     is_leaf=lambda x: x is None,
+        # )
 
         new_m = jax.tree.map(
             lambda m,u : None if m is None else m*(1-new_beta_m) + newg1*u,
@@ -341,7 +341,8 @@ def tanea_optimizer(
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 
-            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
+            else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(u**2 * tau_reg(tau, state.count)+v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
+            #else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
             new_m,
             updates,
             new_v,
