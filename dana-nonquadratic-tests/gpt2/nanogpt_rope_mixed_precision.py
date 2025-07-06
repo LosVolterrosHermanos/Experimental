@@ -36,6 +36,7 @@ class ModelConfig:
         n_layer: Number of transformer layers
         dropout_rate: Dropout probability
         rope_base: Base frequency for RoPE (default 10000.0 as in the paper)
+        use_cudnn_attention: Whether to use jax.nn.dot_product_attention with cudnn implementation
     """
     vocab_size: int = 50257
     n_head: int = 12
@@ -44,6 +45,7 @@ class ModelConfig:
     n_layer: int = 12
     dropout_rate: float = 0.1
     rope_base: float = 10000.0
+    use_cudnn_attention: bool = False
 
 
 def create_rope_cache(seq_len: int, head_dim: int, base: float = 10000.0, dtype=jnp.float32):
@@ -211,33 +213,58 @@ class CausalSelfAttention(nn.Module):
             k = apply_rope(k, cos_cache, sin_cache)
 
         # Attention computation
-        if self.mixed_precision:
-            # Mixed precision: matmul in bfloat16, other ops in float32
-            q_bf16 = q.astype(jnp.bfloat16)
-            k_bf16 = k.astype(jnp.bfloat16)
-            v_bf16 = v.astype(jnp.bfloat16)
+        if self.config.use_cudnn_attention:
+            # Use jax.nn.dot_product_attention with cudnn implementation
+            # Create causal mask (1 for allowed positions, 0 for masked)
+            mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool_))[None, None, :, :]
             
-            att = jnp.matmul(q_bf16, jnp.transpose(k_bf16, (0, 1, 3, 2))) * (1.0 / jnp.sqrt(head_dim))
-            att = att.astype(jnp.float32)  # Cast back to float32 for numerical ops
-            
-            # Create causal mask in float32
-            mask = jnp.tril(jnp.ones((T, T), dtype=jnp.float32))[None, None, :, :]
-            att = jnp.where(mask, att, float('-inf'))
-            att = jax.nn.softmax(att, axis=-1)
-            
-            # Second matmul: cast to bfloat16 for matmul, then back to float32
-            att_bf16 = att.astype(jnp.bfloat16)
-            y = jnp.matmul(att_bf16, v_bf16).astype(jnp.float32)
+            if self.mixed_precision:
+                # Mixed precision: use bfloat16 for attention computation
+                q_bf16 = q.astype(jnp.bfloat16)
+                k_bf16 = k.astype(jnp.bfloat16)
+                v_bf16 = v.astype(jnp.bfloat16)
+                
+                y = jax.nn.dot_product_attention(
+                    q_bf16, k_bf16, v_bf16,
+                    mask=mask,
+                    implementation='cudnn'
+                ).astype(jnp.float32)
+            else:
+                # Pure precision mode
+                y = jax.nn.dot_product_attention(
+                    q, k, v,
+                    mask=mask,
+                    implementation='cudnn'
+                )
         else:
-            # Pure precision mode
-            att = jnp.matmul(q, jnp.transpose(k, (0, 1, 3, 2))) * (jnp.bfloat16(1.0 / jnp.sqrt(head_dim)))
-            
-            # Create causal mask
-            mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bfloat16))[None, None, :, :]
-            att = jnp.where(mask, att, jnp.bfloat16(-1e4))  # Use -1e4 instead of -inf for bfloat16
-            att = jax.nn.softmax(att, axis=-1)
-            
-            y = jnp.matmul(att, v)
+            # Fallback to original implementation
+            if self.mixed_precision:
+                # Mixed precision: matmul in bfloat16, other ops in float32
+                q_bf16 = q.astype(jnp.bfloat16)
+                k_bf16 = k.astype(jnp.bfloat16)
+                v_bf16 = v.astype(jnp.bfloat16)
+                
+                att = jnp.matmul(q_bf16, jnp.transpose(k_bf16, (0, 1, 3, 2))) * (1.0 / jnp.sqrt(head_dim))
+                att = att.astype(jnp.float32)  # Cast back to float32 for numerical ops
+                
+                # Create causal mask in float32
+                mask = jnp.tril(jnp.ones((T, T), dtype=jnp.float32))[None, None, :, :]
+                att = jnp.where(mask, att, float('-inf'))
+                att = jax.nn.softmax(att, axis=-1)
+                
+                # Second matmul: cast to bfloat16 for matmul, then back to float32
+                att_bf16 = att.astype(jnp.bfloat16)
+                y = jnp.matmul(att_bf16, v_bf16).astype(jnp.float32)
+            else:
+                # Pure precision mode
+                att = jnp.matmul(q, jnp.transpose(k, (0, 1, 3, 2))) * (jnp.bfloat16(1.0 / jnp.sqrt(head_dim)))
+                
+                # Create causal mask
+                mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bfloat16))[None, None, :, :]
+                att = jnp.where(mask, att, jnp.bfloat16(-1e4))  # Use -1e4 instead of -inf for bfloat16
+                att = jax.nn.softmax(att, axis=-1)
+                
+                y = jnp.matmul(att, v)
 
         # Re-assemble all head outputs side by side
         y = jnp.transpose(y, (0, 2, 1, 3))  # (B, T, nh, hs)
