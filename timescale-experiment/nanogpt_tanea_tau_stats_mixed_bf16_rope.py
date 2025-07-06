@@ -418,7 +418,7 @@ def main():
             tqdm.write(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             tqdm.write(f"  Momentum Flavor: {config['momentum_flavor']}")
             if config["enable_linear_decay"]:
-                tqdm.write(f"  Linear Decay: enabled (start: {config['linear_decay_start']}, end: {config['linear_decay_end']})")
+                tqdm.write(f"  Linear Decay: enabled (starting step: {config['linear_decay_start']*config['train_steps']}, end value: {config['linear_decay_end']})")
             else:
                 tqdm.write(f"  Linear Decay: disabled")
             tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
