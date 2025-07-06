@@ -201,7 +201,7 @@ def parse_args():
     )
     parser.add_argument(
         "--momentum_flavor", type=str, default="effective-clip",
-        choices=["effective-clip", "theory", "always-on", "strong-clip", "mk2"],
+        choices=["effective-clip", "theory", "always-on", "strong-clip", "mk2", "mk3"],
         help="Tanea momentum flavor"
     )
     parser.add_argument(
