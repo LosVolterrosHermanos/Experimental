@@ -38,8 +38,16 @@ LOG_STEPS_BASE = 1.1
 INIT_STD = 0.02
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+      level=logging.INFO,
+      format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+      filename='train.log',  # Separate log file
+      filemode='w'
+  )
 logger = logging.getLogger(__name__)
+
+
 
 def compute_tau_order_statistics(tau_vector):
     """Compute order statistics for tau vector in a jittable way.
@@ -408,20 +416,20 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
-            tqdm.write(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
-            tqdm.write(f"  Train Loss: {loss:.6f}")
-            tqdm.write(f"  Val Loss: {val_loss:.6f}")
-            tqdm.write(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
-            tqdm.write(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
+            logger.info(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
+            logger.info(f"  Train Loss: {loss:.6f}")
+            logger.info(f"  Val Loss: {val_loss:.6f}")
+            logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
+            logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             if tau_stats:
-                tqdm.write(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
-            tqdm.write(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
-            tqdm.write(f"  Momentum Flavor: {config['momentum_flavor']}")
+                logger.info(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
+            logger.info(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
+            logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
             if config["enable_linear_decay"]:
-                tqdm.write(f"  Linear Decay: enabled (start: {config['linear_decay_start']}, end: {config['linear_decay_end']})")
+                logger.info(f"  Linear Decay: enabled (starting step: {config['linear_decay_start']*config['train_steps']}, end value: {config['linear_decay_end']})")
             else:
-                tqdm.write(f"  Linear Decay: disabled")
-            tqdm.write(f"  Precision: mixed bfloat16 + RoPE\n")
+                logger.info(f"  Linear Decay: disabled")
+            logger.info(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Convert tau statistics lists to arrays
     for key in tau_statistics:
