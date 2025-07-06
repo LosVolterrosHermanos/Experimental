@@ -29,7 +29,7 @@ def test_cudnn_attention():
     
     # Test with original implementation
     model_original = GPTWithRoPE(config, mixed_precision=True)
-    params_original = model_original.init(jax.random.PRNGKey(0), tokens, True)
+    params_original = model_original.init(jax.random.PRNGKey(0))
     logits_original = model_original.apply(params_original, tokens, True)
     
     # Test with cudnn implementation
@@ -58,7 +58,7 @@ def test_cudnn_attention():
     # Test both mixed precision modes
     print("\nTesting pure precision mode:")
     model_original_pure = GPTWithRoPE(config, mixed_precision=False)
-    params_original_pure = model_original_pure.init(jax.random.PRNGKey(0), tokens, True)
+    params_original_pure = model_original_pure.init(jax.random.PRNGKey(0))
     logits_original_pure = model_original_pure.apply(params_original_pure, tokens, True)
     
     model_cudnn_pure = GPTWithRoPE(config_cudnn, mixed_precision=False)
