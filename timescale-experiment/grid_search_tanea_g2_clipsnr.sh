@@ -23,7 +23,7 @@ TANEA_G3=0
 MOMENTUM_FLAVOR="mk3"
 
 # Counter for tracking progress
-total_combinations=$(( ${#TANEA_G2_VALUES[@]} * ${#CLIPSNR_VALUES[@]} + 1 ))  # +1 for Adam baseline
+total_combinations=$(( ${#TANEA_G2_VALUES[@]} * ${#CLIPSNR_VALUES[@]} + 2 ))  # +2 for two Adam baselines
 current=0
 
 echo "Starting grid search for tanea hyperparameters with clipsnr"
@@ -33,7 +33,8 @@ echo "  tanea_g2: ${TANEA_G2_VALUES[*]}"
 echo "  clipsnr: ${CLIPSNR_VALUES[*]}"
 echo "  tanea_g3: $TANEA_G3 (fixed)"
 echo "  momentum_flavor: $MOMENTUM_FLAVOR (fixed)"
-echo "  Adam baseline: beta1=0.9, beta2=0.95, lr=3e-4"
+echo "  Adam baseline 1: beta1=0.9, beta2=0.95, lr=3e-4"
+echo "  Adam baseline 2: beta1=0.0, beta2=0.95, lr=3e-4"
 echo "  Fixed: tanea_kappa=$TANEA_KAPPA, weight_decay_ts=$WEIGHT_DECAY_TS, train_steps=$TRAIN_STEPS"
 echo ""
 
@@ -49,9 +50,9 @@ echo "Grid search started at $(date)" | tee -a "$log_file"
 echo "Results will be saved to: $results_dir" | tee -a "$log_file"
 echo "" | tee -a "$log_file"
 
-# First run Adam baseline
+# First run Adam baseline (beta1=0.9)
 current=$((current + 1))
-echo "=== Combination $current/$total_combinations (Adam Baseline) ===" | tee -a "$log_file"
+echo "=== Combination $current/$total_combinations (Adam Baseline beta1=0.9) ===" | tee -a "$log_file"
 echo "Parameters: Adam baseline with beta1=0.9, beta2=0.95, lr=3e-4" | tee -a "$log_file"
 echo "Started at: $(date)" | tee -a "$log_file"
 
@@ -70,9 +71,38 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
 
 # Check if the command was successful
 if [ $? -eq 0 ]; then
-    echo "✓ Adam baseline completed successfully" | tee -a "$log_file"
+    echo "✓ Adam baseline (beta1=0.9) completed successfully" | tee -a "$log_file"
 else
-    echo "✗ Adam baseline failed with exit code $?" | tee -a "$log_file"
+    echo "✗ Adam baseline (beta1=0.9) failed with exit code $?" | tee -a "$log_file"
+fi
+
+echo "Finished at: $(date)" | tee -a "$log_file"
+echo "" | tee -a "$log_file"
+
+# Second run Adam baseline (beta1=0.0)
+current=$((current + 1))
+echo "=== Combination $current/$total_combinations (Adam Baseline beta1=0.0) ===" | tee -a "$log_file"
+echo "Parameters: Adam baseline with beta1=0.0, beta2=0.95, lr=3e-4" | tee -a "$log_file"
+echo "Started at: $(date)" | tee -a "$log_file"
+
+python nanogpt_adamw_baseline_mixed_bf16_rope.py \
+    --train_steps="$TRAIN_STEPS" \
+    --batch_size="$BATCH_SIZE" \
+    --val_batch_size=1 \
+    --val_steps=1 \
+    --seq_len="$SEQ_LEN" \
+    --lr=3E-4 \
+    --beta1=0.0 \
+    --beta2=0.95 \
+    --weight_decay=1E-3 \
+    --attention_implementation="xla" \
+    --results_dir "$results_dir"
+
+# Check if the command was successful
+if [ $? -eq 0 ]; then
+    echo "✓ Adam baseline (beta1=0.0) completed successfully" | tee -a "$log_file"
+else
+    echo "✗ Adam baseline (beta1=0.0) failed with exit code $?" | tee -a "$log_file"
 fi
 
 echo "Finished at: $(date)" | tee -a "$log_file"
