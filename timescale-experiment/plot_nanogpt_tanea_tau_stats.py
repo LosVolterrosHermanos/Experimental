@@ -146,7 +146,7 @@ def load_rmsprop_dana_baseline(results_dir="results", pattern="*rmsprop_dana*.pk
         print(f"Error loading RMSprop+Dana baseline {most_recent_file}: {e}")
         return None
 
-def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_stats.pdf"):
+def create_tau_statistics_plots(results_data, output_file=None, results_dir="results"):
     """Create tau order statistics visualization similar to MoE experiment."""
     
     n_results = len(results_data)
@@ -261,13 +261,17 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
     
     plt.tight_layout()
     
+    # Set default output file if not provided
+    if output_file is None:
+        output_file = os.path.join(results_dir, "nanogpt_tanea_tau_stats.pdf")
+    
     # Save the figure
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Tau statistics plot saved as {output_file}")
     
     plt.show()
 
-def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_baseline=None, output_file="nanogpt_tanea_learning_curves.pdf"):
+def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_baseline=None, output_file=None, results_dir="results"):
     """Create learning curves plot showing training and validation losses."""
     
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -386,6 +390,10 @@ def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_base
     ax.grid(True, which='both', linestyle='--', alpha=0.7)
     ax.legend(fontsize=15, loc='lower left')
     
+    # Set default output file if not provided
+    if output_file is None:
+        output_file = os.path.join(results_dir, "nanogpt_tanea_learning_curves.pdf")
+    
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Learning curves plot saved as {output_file}")
@@ -480,12 +488,12 @@ def main():
             print("\nNo baselines found - will plot Tanea results only")
         
         # Create tau statistics plots
-        tau_output = f"{args.output_prefix}_tau_stats.pdf"
-        create_tau_statistics_plots(results_data, tau_output)
+        tau_output = os.path.join(args.results_dir, f"{args.output_prefix}_tau_stats.pdf")
+        create_tau_statistics_plots(results_data, tau_output, args.results_dir)
         
         # Create learning curves with baselines
-        curves_output = f"{args.output_prefix}_learning_curves.pdf"
-        create_learning_curves(results_data, adamw_baselines, rmsprop_dana_baseline, curves_output)
+        curves_output = os.path.join(args.results_dir, f"{args.output_prefix}_learning_curves.pdf")
+        create_learning_curves(results_data, adamw_baselines, rmsprop_dana_baseline, curves_output, args.results_dir)
         
         # Print summary
         print_summary_statistics(results_data)

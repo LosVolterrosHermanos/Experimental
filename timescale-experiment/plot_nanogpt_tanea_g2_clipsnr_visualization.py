@@ -109,7 +109,7 @@ def load_adamw_baselines(results_dir="results", pattern="*adamw_baseline*.pkl"):
     
     return baseline_data
 
-def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_file="nanogpt_tanea_g2_clipsnr_curves.pdf"):
+def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_file=None, results_dir="results"):
     """Create learning curves plot with color coding for g2 and line patterns for clipsnr."""
     
     fig, ax = plt.subplots(figsize=(15, 10))
@@ -148,13 +148,14 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
     g2_values = sorted(g2_groups.keys())
     colors = plt.cm.Set1(np.linspace(0, 1, len(g2_values)))
     
-    # Define line styles for different clipsnr values
-    clipsnr_styles = {
-        1.0: '-',     # solid
-        2.0: '--',    # dashed
-        3.0: '-.',    # dash-dot
-        4.0: ':'      # dotted
-    }
+    # Get unique clipsnr values and assign line styles
+    clipsnr_values = sorted(set(data['clipsnr'] for data in results_data))
+    available_styles = ['-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 5)), (0, (3, 5, 1, 5)), (0, (1, 1))]
+    
+    # Create clipsnr to line style mapping
+    clipsnr_styles = {}
+    for i, clipsnr in enumerate(clipsnr_values):
+        clipsnr_styles[clipsnr] = available_styles[i % len(available_styles)]
     
     # Plot each g2 group with different colors
     for i, (g2_val, g2_data) in enumerate(g2_groups.items()):
@@ -218,18 +219,35 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
     legend = ax.legend(handles, labels, fontsize=10, loc='upper right', ncol=2, 
                       bbox_to_anchor=(1.0, 1.0), framealpha=0.9)
     
-    # Add text boxes to explain color coding and line styles
-    textstr = 'Color = g2 value\nLine style = clipsnr value'
+    # Create a second legend for clipsnr line styles
+    from matplotlib.lines import Line2D
+    clipsnr_legend_elements = []
+    for clipsnr in sorted(clipsnr_values):
+        style = clipsnr_styles[clipsnr]
+        clipsnr_legend_elements.append(Line2D([0], [0], color='black', linestyle=style, 
+                                            label=f'clipsnr={clipsnr:.1f}'))
+    
+    # Add the clipsnr legend
+    clipsnr_legend = ax.legend(handles=clipsnr_legend_elements, loc='lower left', 
+                              title='Clipsnr (line style)', fontsize=9, title_fontsize=10)
+    ax.add_artist(clipsnr_legend)
+    
+    # Add text box to explain color coding
+    textstr = 'Color = g2 value'
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
     ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=12,
             verticalalignment='top', bbox=props)
+    
+    # Set default output file if not provided
+    if output_file is None:
+        output_file = os.path.join(results_dir, "nanogpt_tanea_g2_clipsnr_curves.pdf")
     
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"G2-clipsnr visualization saved as {output_file}")
     plt.show()
 
-def create_parameter_summary_table(results_data, adamw_baselines=None, output_file="nanogpt_tanea_g2_clipsnr_summary.txt"):
+def create_parameter_summary_table(results_data, adamw_baselines=None, output_file=None, results_dir="results"):
     """Create a summary table of all parameter combinations and their performance."""
     
     # Group by g2 and clipsnr for easy comparison
@@ -253,6 +271,10 @@ def create_parameter_summary_table(results_data, adamw_baselines=None, output_fi
     
     # Sort by final validation loss (best first)
     summary_data.sort(key=lambda x: x['final_val_loss'])
+    
+    # Set default output file if not provided
+    if output_file is None:
+        output_file = os.path.join(results_dir, "nanogpt_tanea_g2_clipsnr_summary.txt")
     
     # Write summary to file
     with open(output_file, 'w') as f:
@@ -317,12 +339,12 @@ def main():
             print("\nNo AdamW baselines found")
         
         # Create g2-clipsnr visualization
-        viz_output = f"{args.output_prefix}_visualization.pdf"
-        create_g2_clipsnr_visualization(results_data, adamw_baselines, viz_output)
+        viz_output = os.path.join(args.results_dir, f"{args.output_prefix}_visualization.pdf")
+        create_g2_clipsnr_visualization(results_data, adamw_baselines, viz_output, args.results_dir)
         
         # Create parameter summary table
-        summary_output = f"{args.output_prefix}_summary.txt"
-        create_parameter_summary_table(results_data, adamw_baselines, summary_output)
+        summary_output = os.path.join(args.results_dir, f"{args.output_prefix}_summary.txt")
+        create_parameter_summary_table(results_data, adamw_baselines, summary_output, args.results_dir)
         
         # Print statistics
         print(f"\nParameter sweep statistics:")
