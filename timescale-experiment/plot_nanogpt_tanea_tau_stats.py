@@ -430,6 +430,8 @@ def main():
                        help="Pattern to match AdamW baseline files")
     parser.add_argument("--rmsprop_dana_pattern", type=str, default="*rmsprop_dana*.pkl",
                        help="Pattern to match RMSprop+Dana baseline files")
+    parser.add_argument("--clipsnr", type=float, default=2.0,
+                       help="Clipsnr parameter for filtering results (default: 2.0)")
     
     args = parser.parse_args()
     

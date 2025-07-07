@@ -237,6 +237,11 @@ def parse_args():
         "--grad_clip", type=float, default=2.0,
         help="Gradient clipping threshold (default: 2.0, set to 0 to disable)"
     )
+    # Clipsnr parameter for Tanea optimizer
+    parser.add_argument(
+        "--clipsnr", type=float, default=2.0,
+        help="Clipping factor for signal-to-noise ratio in Tanea optimizer (default: 2.0)"
+    )
     # Checkpoint parameters
     parser.add_argument(
         "--disable_checkpoint", action="store_true",
@@ -308,6 +313,7 @@ def main():
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
         "grad_clip": args.grad_clip,
+        "clipsnr": args.clipsnr,
         "disable_checkpoint": args.disable_checkpoint,
         "precision": "mixed_bfloat16_rope"
     }
@@ -324,7 +330,7 @@ def main():
     g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
     delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
     wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
-    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"])
+    tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
 
     # Create optimizer chain with optional linear decay
     if config["enable_linear_decay"]:
