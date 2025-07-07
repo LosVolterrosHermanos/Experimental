@@ -11,16 +11,17 @@
 # Fixed parameters
 TANEA_KAPPA=0.75
 WEIGHT_DECAY_TS=100
-TRAIN_STEPS=50
+TRAIN_STEPS=200
 DECAY=""
 SEQ_LEN=1024
 BATCH_SIZE=8
 VAL_BATCH_SIZE=8
 VAL_STEPS=8
+CLIP_NORM=100.0
 
 # Arrays for grid search parameters
 TANEA_G2_VALUES=(1E-4)
-CLIPSNR_VALUES=(1.0 2.0 4.0)
+CLIPSNR_VALUES=(1E-2 2E-2 4E-2 8E-2 16E-2 32E-2 64E-2 128E-2 256E-2 512E-2 1024E-2)
 TANEA_G3=0
 MOMENTUM_FLAVOR="mk3"
 
@@ -67,6 +68,7 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --lr=3E-4 \
     --beta1=0.9 \
     --beta2=0.95 \
+    --grad_clip="$CLIP_NORM" \
     --weight_decay=1E-3 \
     --attention_implementation="xla" \
     --results_dir "$results_dir"
@@ -93,9 +95,10 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --val_batch_size="$VAL_BATCH_SIZE" \
     --val_steps="$VAL_STEPS" \
     --seq_len="$SEQ_LEN" \
-    --lr=3E-4 \
+    --lr=8E-5 \
     --beta1=0.0 \
     --beta2=0.95 \
+    --grad_clip="$CLIP_NORM" \
     --weight_decay=1E-3 \
     --attention_implementation="xla" \
     --results_dir "$results_dir"
@@ -130,6 +133,7 @@ for tanea_g2 in "${TANEA_G2_VALUES[@]}"; do
             --tanea_g3="$TANEA_G3" \
             --tanea_kappa="$TANEA_KAPPA" \
             --clipsnr="$clipsnr" \
+            --grad_clip="$CLIP_NORM" \
             --weight_decay=1E-3 \
             --power_weight_decay=1.0 \
             --weight_decay_ts="$WEIGHT_DECAY_TS" \
