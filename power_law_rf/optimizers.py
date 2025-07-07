@@ -266,8 +266,10 @@ def tanea_optimizer(
 
     ##This is the default g2_momentum_term.
     g2_momentum_term = lambda u, md, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
-    #This furthermore clips the gradient at the level appropriate to the SNR of the problem.
-    g2_momentum_term = lambda u, md, v, tau, t: (root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon)))*jnp.minimum(1.0,clipsnr*jnp.abs(md)/(jnp.sqrt(v)*jnp.abs(u)+epsilon))
+    #This one was working close to init, but is not actually the theoretically informed one
+    #g2_momentum_term = lambda u, md, v, tau, t: (root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon)))*jnp.minimum(1.0,clipsnr*jnp.abs(md)/(jnp.sqrt(v)*jnp.abs(u)+epsilon))
+    #This is the correct schedule.
+    g2_momentum_term = lambda u, md, v, tau, t: (root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon)))*jnp.minimum(1.0,clipsnr/(jnp.sqrt(v)*jnp.abs(u)+epsilon**2))
 
     ## The g3_momentum_term will be used to multiply the first moment estimator $m$ and the schedule.  The standard Adam scaling would simply output 1/(sqrt(v)+epsilon), times a learning rate, which is here g3(effective_time(tau, t)).  
     ## Now, in the sparse-in-time settig, where updates occur with some probability $p$, we ideally have something like $m = p*E(g)$, where $E(g)$ is some partial expectation of the gradient achieved by time averaging.  This $E(g)$ is a 'DANA-type' momentum estimate.  The $v = p*E(g^2)$ with the same sense of partial expectation.  The $tau$ is an approximation of $p$, and $\tau_reg$ stabilizes the estimate.  
