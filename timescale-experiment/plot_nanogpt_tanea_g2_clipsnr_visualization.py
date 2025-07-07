@@ -64,68 +64,79 @@ def load_tanea_results(results_dir="results", pattern="*tanea_results*.pkl"):
     
     return results_data
 
-def load_adamw_baseline(results_dir="results", pattern="*adamw_baseline*.pkl"):
-    """Load the most recent AdamW baseline results from pickle files."""
+def load_adamw_baselines(results_dir="results", pattern="*adamw_baseline*.pkl"):
+    """Load all AdamW baseline results from pickle files."""
     
     pickle_files = glob.glob(os.path.join(results_dir, pattern))
     
     if not pickle_files:
         print(f"No AdamW baseline files found in {results_dir} with pattern {pattern}")
-        return None
+        return []
     
-    # Sort by modification time and take the most recent
-    pickle_files.sort(key=os.path.getmtime, reverse=True)
-    most_recent_file = pickle_files[0]
+    baseline_data = []
     
-    try:
-        with open(most_recent_file, 'rb') as f:
-            data = pickle.load(f)
-        
-        # Extract relevant information
-        config = data['config']
-        metrics = data['metrics']
-        num_params = data.get('num_params', 0)
-        optimizer_type = data.get('optimizer_type', 'adamw')
-        
-        baseline_data = {
-            'config': config,
-            'metrics': metrics,
-            'num_params': num_params,
-            'optimizer_type': optimizer_type,
-            'filename': os.path.basename(most_recent_file)
-        }
-        
-        print(f"Loaded AdamW baseline from {os.path.basename(most_recent_file)}")
-        print(f"  Parameters: lr={config['lr']}, beta1={config['beta1']}, beta2={config['beta2']}, wd={config['weight_decay']}")
-        print(f"  Model params: {num_params:,}")
-        
-        return baseline_data
-        
-    except Exception as e:
-        print(f"Error loading AdamW baseline {most_recent_file}: {e}")
-        return None
+    for pkl_file in pickle_files:
+        try:
+            with open(pkl_file, 'rb') as f:
+                data = pickle.load(f)
+            
+            # Extract relevant information
+            config = data['config']
+            metrics = data['metrics']
+            num_params = data.get('num_params', 0)
+            optimizer_type = data.get('optimizer_type', 'adamw')
+            
+            baseline_info = {
+                'config': config,
+                'metrics': metrics,
+                'num_params': num_params,
+                'optimizer_type': optimizer_type,
+                'filename': os.path.basename(pkl_file)
+            }
+            
+            baseline_data.append(baseline_info)
+            
+            print(f"Loaded AdamW baseline from {os.path.basename(pkl_file)}")
+            print(f"  Parameters: lr={config['lr']}, beta1={config['beta1']}, beta2={config['beta2']}, wd={config['weight_decay']}")
+            print(f"  Model params: {num_params:,}")
+            
+        except Exception as e:
+            print(f"Error loading AdamW baseline {pkl_file}: {e}")
+            continue
+    
+    # Sort by beta1 for consistent ordering
+    baseline_data.sort(key=lambda x: x['config']['beta1'])
+    
+    return baseline_data
 
-def create_g2_clipsnr_visualization(results_data, adamw_baseline=None, output_file="nanogpt_tanea_g2_clipsnr_curves.pdf"):
+def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_file="nanogpt_tanea_g2_clipsnr_curves.pdf"):
     """Create learning curves plot with color coding for g2 and line patterns for clipsnr."""
     
     fig, ax = plt.subplots(figsize=(15, 10))
     
-    # Plot AdamW baseline first if available
-    if adamw_baseline:
-        config = adamw_baseline['config']
-        metrics = adamw_baseline['metrics']
+    # Plot AdamW baselines first if available
+    if adamw_baselines:
+        baseline_colors = ['black', 'gray']
+        baseline_markers = ['o', 's']
         
-        # Calculate tokens processed
-        steps = np.array(metrics['step'])
-        train_losses = np.array(metrics['train_loss'])
-        val_losses = np.array(metrics['val_loss'])
-        tokens_per_step = config["batch_size"] * config["seq_len"]
-        tokens = steps * tokens_per_step
-        
-        label_base = f"AdamW Baseline (lr={config['lr']:.1e}, β1={config['beta1']:.2f}, β2={config['beta2']:.2f})".replace('e+0', 'e+').replace('e-0', 'e-')
-        # Plot AdamW baseline in black with thick lines
-        ax.loglog(tokens, val_losses, 'o-', color='black', alpha=1.0, 
-                 markersize=6, linewidth=4, label=label_base)
+        for i, baseline in enumerate(adamw_baselines):
+            config = baseline['config']
+            metrics = baseline['metrics']
+            
+            # Calculate tokens processed
+            steps = np.array(metrics['step'])
+            train_losses = np.array(metrics['train_loss'])
+            val_losses = np.array(metrics['val_loss'])
+            tokens_per_step = config["batch_size"] * config["seq_len"]
+            tokens = steps * tokens_per_step
+            
+            color = baseline_colors[i % len(baseline_colors)]
+            marker = baseline_markers[i % len(baseline_markers)]
+            
+            label_base = f"AdamW β1={config['beta1']:.1f} (lr={config['lr']:.1e}, β2={config['beta2']:.2f})".replace('e+0', 'e+').replace('e-0', 'e-')
+            # Plot AdamW baseline with thick lines
+            ax.loglog(tokens, val_losses, marker=marker, linestyle='-', color=color, alpha=1.0, 
+                     markersize=6, linewidth=4, label=label_base)
     
     # Group results by g2 value
     g2_groups = defaultdict(list)
@@ -178,8 +189,11 @@ def create_g2_clipsnr_visualization(results_data, adamw_baseline=None, output_fi
     ax.set_xlabel('Training Tokens', fontsize=14)
     ax.set_ylabel('Validation Loss', fontsize=14)
     title = 'NanoGPT Learning Curves: Tanea g2 vs clipsnr Parameter Sweep'
-    if adamw_baseline:
-        title += ' vs AdamW Baseline'
+    if adamw_baselines:
+        if len(adamw_baselines) > 1:
+            title += ' vs AdamW Baselines'
+        else:
+            title += ' vs AdamW Baseline'
     ax.set_title(title, fontsize=16)
     
     # Format x-axis
@@ -215,7 +229,7 @@ def create_g2_clipsnr_visualization(results_data, adamw_baseline=None, output_fi
     print(f"G2-clipsnr visualization saved as {output_file}")
     plt.show()
 
-def create_parameter_summary_table(results_data, adamw_baseline=None, output_file="nanogpt_tanea_g2_clipsnr_summary.txt"):
+def create_parameter_summary_table(results_data, adamw_baselines=None, output_file="nanogpt_tanea_g2_clipsnr_summary.txt"):
     """Create a summary table of all parameter combinations and their performance."""
     
     # Group by g2 and clipsnr for easy comparison
@@ -245,11 +259,14 @@ def create_parameter_summary_table(results_data, adamw_baseline=None, output_fil
         f.write("NanoGPT Tanea g2-clipsnr Parameter Sweep Summary\n")
         f.write("="*60 + "\n\n")
         
-        if adamw_baseline:
-            config = adamw_baseline['config']
-            metrics = adamw_baseline['metrics']
-            final_val_loss = metrics['val_loss'][-1] if metrics['val_loss'] else float('inf')
-            f.write(f"AdamW Baseline: lr={config['lr']:.1e}, final_val_loss={final_val_loss:.6f}\n\n")
+        if adamw_baselines:
+            f.write("AdamW Baselines:\n")
+            for i, baseline in enumerate(adamw_baselines):
+                config = baseline['config']
+                metrics = baseline['metrics']
+                final_val_loss = metrics['val_loss'][-1] if metrics['val_loss'] else float('inf')
+                f.write(f"  {i+1}. β1={config['beta1']:.1f}, lr={config['lr']:.1e}, final_val_loss={final_val_loss:.6f}\n")
+            f.write("\n")
         
         f.write("Tanea Results (sorted by final validation loss):\n")
         f.write("-"*60 + "\n")
@@ -292,20 +309,20 @@ def main():
         
         print(f"\nLoaded results for {len(results_data)} Tanea configurations")
         
-        # Load AdamW baseline
-        adamw_baseline = load_adamw_baseline(args.results_dir, args.adamw_pattern)
-        if adamw_baseline:
-            print("\nAdamW baseline loaded successfully")
+        # Load AdamW baselines
+        adamw_baselines = load_adamw_baselines(args.results_dir, args.adamw_pattern)
+        if adamw_baselines:
+            print(f"\n{len(adamw_baselines)} AdamW baseline(s) loaded successfully")
         else:
-            print("\nNo AdamW baseline found")
+            print("\nNo AdamW baselines found")
         
         # Create g2-clipsnr visualization
         viz_output = f"{args.output_prefix}_visualization.pdf"
-        create_g2_clipsnr_visualization(results_data, adamw_baseline, viz_output)
+        create_g2_clipsnr_visualization(results_data, adamw_baselines, viz_output)
         
         # Create parameter summary table
         summary_output = f"{args.output_prefix}_summary.txt"
-        create_parameter_summary_table(results_data, adamw_baseline, summary_output)
+        create_parameter_summary_table(results_data, adamw_baselines, summary_output)
         
         # Print statistics
         print(f"\nParameter sweep statistics:")

@@ -60,46 +60,50 @@ def load_tanea_results(results_dir="results", pattern="*tanea_results*.pkl"):
     
     return results_data
 
-def load_adamw_baseline(results_dir="results", pattern="*adamw_baseline*.pkl"):
-    """Load the most recent AdamW baseline results from pickle files."""
+def load_adamw_baselines(results_dir="results", pattern="*adamw_baseline*.pkl"):
+    """Load all AdamW baseline results from pickle files."""
     
     pickle_files = glob.glob(os.path.join(results_dir, pattern))
     
     if not pickle_files:
         print(f"No AdamW baseline files found in {results_dir} with pattern {pattern}")
-        return None
+        return []
     
-    # Sort by modification time and take the most recent
-    pickle_files.sort(key=os.path.getmtime, reverse=True)
-    most_recent_file = pickle_files[0]
+    baseline_data = []
     
-    try:
-        with open(most_recent_file, 'rb') as f:
-            data = pickle.load(f)
-        
-        # Extract relevant information
-        config = data['config']
-        metrics = data['metrics']
-        num_params = data.get('num_params', 0)
-        optimizer_type = data.get('optimizer_type', 'adamw')
-        
-        baseline_data = {
-            'config': config,
-            'metrics': metrics,
-            'num_params': num_params,
-            'optimizer_type': optimizer_type,
-            'filename': os.path.basename(most_recent_file)
-        }
-        
-        print(f"Loaded AdamW baseline from {os.path.basename(most_recent_file)}")
-        print(f"  Parameters: lr={config['lr']}, beta1={config['beta1']}, beta2={config['beta2']}, wd={config['weight_decay']}")
-        print(f"  Model params: {num_params:,}")
-        
-        return baseline_data
-        
-    except Exception as e:
-        print(f"Error loading AdamW baseline {most_recent_file}: {e}")
-        return None
+    for pkl_file in pickle_files:
+        try:
+            with open(pkl_file, 'rb') as f:
+                data = pickle.load(f)
+            
+            # Extract relevant information
+            config = data['config']
+            metrics = data['metrics']
+            num_params = data.get('num_params', 0)
+            optimizer_type = data.get('optimizer_type', 'adamw')
+            
+            baseline_info = {
+                'config': config,
+                'metrics': metrics,
+                'num_params': num_params,
+                'optimizer_type': optimizer_type,
+                'filename': os.path.basename(pkl_file)
+            }
+            
+            baseline_data.append(baseline_info)
+            
+            print(f"Loaded AdamW baseline from {os.path.basename(pkl_file)}")
+            print(f"  Parameters: lr={config['lr']}, beta1={config['beta1']}, beta2={config['beta2']}, wd={config['weight_decay']}")
+            print(f"  Model params: {num_params:,}")
+            
+        except Exception as e:
+            print(f"Error loading AdamW baseline {pkl_file}: {e}")
+            continue
+    
+    # Sort by beta1 for consistent ordering
+    baseline_data.sort(key=lambda x: x['config']['beta1'])
+    
+    return baseline_data
 
 def load_rmsprop_dana_baseline(results_dir="results", pattern="*rmsprop_dana*.pkl"):
     """Load the most recent RMSprop+Dana baseline results from pickle files."""
@@ -263,29 +267,36 @@ def create_tau_statistics_plots(results_data, output_file="nanogpt_tanea_tau_sta
     
     plt.show()
 
-def create_learning_curves(results_data, adamw_baseline=None, rmsprop_dana_baseline=None, output_file="nanogpt_tanea_learning_curves.pdf"):
+def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_baseline=None, output_file="nanogpt_tanea_learning_curves.pdf"):
     """Create learning curves plot showing training and validation losses."""
     
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # Plot AdamW baseline first if available
-    if adamw_baseline:
-        config = adamw_baseline['config']
-        metrics = adamw_baseline['metrics']
+    # Plot AdamW baselines first if available
+    if adamw_baselines:
+        baseline_colors = ['black', 'gray']
+        baseline_markers = [('o', 's'), ('v', '^')]
         
-        # Calculate tokens processed
-        steps = np.array(metrics['step'])
-        train_losses = np.array(metrics['train_loss'])
-        val_losses = np.array(metrics['val_loss'])
-        tokens_per_step = config["batch_size"] * config["seq_len"]
-        tokens = steps * tokens_per_step
-        
-        label_base = f"AdamW Baseline, lr={config['lr']:.1e}, β1={config['beta1']:.2f}, β2={config['beta2']:.2f}, wd={config['weight_decay']:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
-        # Plot AdamW baseline in black with thick lines
-        ax.loglog(tokens, train_losses, 'o-', color='black', alpha=0.8, 
-                 markersize=5, linewidth=3, label=label_base+" (train)")
-        ax.loglog(tokens, val_losses, 's-', color='black', alpha=1.0, 
-                 markersize=5, linewidth=3, label=label_base+" (val)")
+        for i, baseline in enumerate(adamw_baselines):
+            config = baseline['config']
+            metrics = baseline['metrics']
+            
+            # Calculate tokens processed
+            steps = np.array(metrics['step'])
+            train_losses = np.array(metrics['train_loss'])
+            val_losses = np.array(metrics['val_loss'])
+            tokens_per_step = config["batch_size"] * config["seq_len"]
+            tokens = steps * tokens_per_step
+            
+            color = baseline_colors[i % len(baseline_colors)]
+            train_marker, val_marker = baseline_markers[i % len(baseline_markers)]
+            
+            label_base = f"AdamW β1={config['beta1']:.1f}, lr={config['lr']:.1e}, β2={config['beta2']:.2f}, wd={config['weight_decay']:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
+            # Plot AdamW baseline with thick lines
+            ax.loglog(tokens, train_losses, marker=train_marker, linestyle='-', color=color, alpha=0.8, 
+                     markersize=5, linewidth=3, label=label_base+" (train)")
+            ax.loglog(tokens, val_losses, marker=val_marker, linestyle='-', color=color, alpha=1.0, 
+                     markersize=5, linewidth=3, label=label_base+" (val)")
     
     # Plot RMSprop+Dana baseline if available
     if rmsprop_dana_baseline:
@@ -346,10 +357,16 @@ def create_learning_curves(results_data, adamw_baseline=None, rmsprop_dana_basel
     ax.set_xlabel('Training Tokens')
     ax.set_ylabel('Loss')
     title = 'NanoGPT Learning Curves: Tanea'
-    if adamw_baseline and rmsprop_dana_baseline:
-        title += ' vs AdamW vs RMSprop+Dana Baselines'
-    elif adamw_baseline:
-        title += ' vs AdamW Baseline'
+    if adamw_baselines and rmsprop_dana_baseline:
+        if len(adamw_baselines) > 1:
+            title += ' vs AdamW Baselines vs RMSprop+Dana'
+        else:
+            title += ' vs AdamW vs RMSprop+Dana Baselines'
+    elif adamw_baselines:
+        if len(adamw_baselines) > 1:
+            title += ' vs AdamW Baselines'
+        else:
+            title += ' vs AdamW Baseline'
     elif rmsprop_dana_baseline:
         title += ' vs RMSprop+Dana Baseline'
     ax.set_title(title)
@@ -445,12 +462,12 @@ def main():
         
         print(f"\nLoaded results for {len(results_data)} Tanea configurations")
         
-        # Load AdamW baseline
-        adamw_baseline = load_adamw_baseline(args.results_dir, args.adamw_pattern)
-        if adamw_baseline:
-            print("\nAdamW baseline loaded successfully")
+        # Load AdamW baselines
+        adamw_baselines = load_adamw_baselines(args.results_dir, args.adamw_pattern)
+        if adamw_baselines:
+            print(f"\n{len(adamw_baselines)} AdamW baseline(s) loaded successfully")
         else:
-            print("\nNo AdamW baseline found")
+            print("\nNo AdamW baselines found")
         
         # Load RMSprop+Dana baseline
         rmsprop_dana_baseline = load_rmsprop_dana_baseline(args.results_dir, args.rmsprop_dana_pattern)
@@ -459,7 +476,7 @@ def main():
         else:
             print("\nNo RMSprop+Dana baseline found")
         
-        if not adamw_baseline and not rmsprop_dana_baseline:
+        if not adamw_baselines and not rmsprop_dana_baseline:
             print("\nNo baselines found - will plot Tanea results only")
         
         # Create tau statistics plots
@@ -468,26 +485,34 @@ def main():
         
         # Create learning curves with baselines
         curves_output = f"{args.output_prefix}_learning_curves.pdf"
-        create_learning_curves(results_data, adamw_baseline, rmsprop_dana_baseline, curves_output)
+        create_learning_curves(results_data, adamw_baselines, rmsprop_dana_baseline, curves_output)
         
         # Print summary
         print_summary_statistics(results_data)
         
-        # Print AdamW baseline summary if available
-        if adamw_baseline:
+        # Print AdamW baseline summaries if available
+        if adamw_baselines:
             print("\n" + "="*80)
-            print("AdamW Baseline Summary")
+            if len(adamw_baselines) > 1:
+                print("AdamW Baselines Summary")
+            else:
+                print("AdamW Baseline Summary")
             print("="*80)
-            config = adamw_baseline['config']
-            metrics = adamw_baseline['metrics']
-            print(f"Configuration: lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']}")
-            print(f"Model parameters: {adamw_baseline['num_params']:,}")
-            print(f"Training steps: {config['train_steps']:,}")
-            print(f"Batch size: {config['batch_size']}, Sequence length: {config['seq_len']}")
-            if metrics['train_loss']:
-                print(f"Final train loss: {metrics['train_loss'][-1]:.6f}")
-            if metrics['val_loss']:
-                print(f"Final val loss: {metrics['val_loss'][-1]:.6f}")
+            
+            for i, baseline in enumerate(adamw_baselines):
+                config = baseline['config']
+                metrics = baseline['metrics']
+                print(f"Baseline {i+1}:")
+                print(f"  Configuration: lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']}")
+                print(f"  Model parameters: {baseline['num_params']:,}")
+                print(f"  Training steps: {config['train_steps']:,}")
+                print(f"  Batch size: {config['batch_size']}, Sequence length: {config['seq_len']}")
+                if metrics['train_loss']:
+                    print(f"  Final train loss: {metrics['train_loss'][-1]:.6f}")
+                if metrics['val_loss']:
+                    print(f"  Final val loss: {metrics['val_loss'][-1]:.6f}")
+                if i < len(adamw_baselines) - 1:
+                    print()
         
         # Print RMSprop+Dana baseline summary if available
         if rmsprop_dana_baseline:
