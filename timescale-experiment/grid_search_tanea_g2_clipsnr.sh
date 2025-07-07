@@ -11,14 +11,16 @@
 # Fixed parameters
 TANEA_KAPPA=0.75
 WEIGHT_DECAY_TS=100
-TRAIN_STEPS=500
+TRAIN_STEPS=50
 DECAY=""
 SEQ_LEN=1024
 BATCH_SIZE=8
+VAL_BATCH_SIZE=8
+VAL_STEPS=8
 
 # Arrays for grid search parameters
-TANEA_G2_VALUES=(2E-5 4E-5 6E-5 8E-5)
-CLIPSNR_VALUES=(1.0 2.0 3.0 4.0)
+TANEA_G2_VALUES=(1E-4)
+CLIPSNR_VALUES=(1.0 2.0 4.0)
 TANEA_G3=0
 MOMENTUM_FLAVOR="mk3"
 
@@ -59,8 +61,8 @@ echo "Started at: $(date)" | tee -a "$log_file"
 python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --train_steps="$TRAIN_STEPS" \
     --batch_size="$BATCH_SIZE" \
-    --val_batch_size=1 \
-    --val_steps=1 \
+    --val_batch_size="$VAL_BATCH_SIZE" \
+    --val_steps="$VAL_STEPS" \
     --seq_len="$SEQ_LEN" \
     --lr=3E-4 \
     --beta1=0.9 \
@@ -88,8 +90,8 @@ echo "Started at: $(date)" | tee -a "$log_file"
 python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --train_steps="$TRAIN_STEPS" \
     --batch_size="$BATCH_SIZE" \
-    --val_batch_size=1 \
-    --val_steps=1 \
+    --val_batch_size="$VAL_BATCH_SIZE" \
+    --val_steps="$VAL_STEPS" \
     --seq_len="$SEQ_LEN" \
     --lr=3E-4 \
     --beta1=0.0 \
@@ -121,8 +123,8 @@ for tanea_g2 in "${TANEA_G2_VALUES[@]}"; do
         python nanogpt_tanea_tau_stats_mixed_bf16_rope.py \
             --train_steps="$TRAIN_STEPS" \
             --batch_size="$BATCH_SIZE" \
-            --val_batch_size=1 \
-            --val_steps=1 \
+            --val_batch_size="$VAL_BATCH_SIZE" \
+            --val_steps="$VAL_STEPS" \
             --seq_len="$SEQ_LEN" \
             --tanea_g2="$tanea_g2" \
             --tanea_g3="$TANEA_G3" \
