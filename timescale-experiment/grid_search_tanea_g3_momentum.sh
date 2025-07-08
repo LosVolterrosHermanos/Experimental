@@ -11,7 +11,7 @@
 # Fixed parameters (using best values from previous sweep)
 TANEA_KAPPA=0.75
 WEIGHT_DECAY_TS=100
-TRAIN_STEPS=20
+TRAIN_STEPS=30000
 DECAY=""
 SEQ_LEN=1024
 BATCH_SIZE=8
@@ -21,11 +21,11 @@ CLIP_NORM=100.0
 
 # Fixed parameters from previous sweep (update these based on your best results)
 TANEA_G2=1E-4
-CLIPSNR=1.0
+CLIPSNR=2.0
 
 # Arrays for grid search parameters
-TANEA_G3_VALUES=(8E-5 4E-5 2E-5)
-MOMENTUM_FLAVOR_VALUES=("effective-clip" "mk2" "mk3")
+TANEA_G3_VALUES=(16E-5 8E-5 4E-5)
+MOMENTUM_FLAVOR_VALUES=("effective-clip" "mk3")
 
 # Momentum flavor scalers
 MK2_SCALER=$(echo "scale=10; 11480/9332" | bc -l)
@@ -42,8 +42,8 @@ echo "  tanea_g3: ${TANEA_G3_VALUES[*]}"
 echo "  momentum_flavor: ${MOMENTUM_FLAVOR_VALUES[*]}"
 echo "  tanea_g2: $TANEA_G2 (fixed)"
 echo "  clipsnr: $CLIPSNR (fixed)"
-echo "  Adam baseline 1: beta1=0.9, beta2=0.95, lr=3e-4"
-echo "  Adam baseline 2: beta1=0.0, beta2=0.95, lr=3e-4"
+echo "  Adam baseline 1: beta1=0.9, beta2=0.95, lr=8e-5"
+echo "  Adam baseline 2: beta1=0.0, beta2=0.95, lr=8e-5"
 echo "  Fixed: tanea_kappa=$TANEA_KAPPA, weight_decay_ts=$WEIGHT_DECAY_TS, train_steps=$TRAIN_STEPS"
 echo ""
 
@@ -62,7 +62,7 @@ echo "" | tee -a "$log_file"
 # First run Adam baseline (beta1=0.9)
 current=$((current + 1))
 echo "=== Combination $current/$total_combinations (Adam Baseline beta1=0.9) ===" | tee -a "$log_file"
-echo "Parameters: Adam baseline with beta1=0.9, beta2=0.95, lr=3e-4" | tee -a "$log_file"
+echo "Parameters: Adam baseline with beta1=0.9, beta2=0.95, lr=8e-5" | tee -a "$log_file"
 echo "Started at: $(date)" | tee -a "$log_file"
 
 python nanogpt_adamw_baseline_mixed_bf16_rope.py \
@@ -71,7 +71,7 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --val_batch_size="$VAL_BATCH_SIZE" \
     --val_steps="$VAL_STEPS" \
     --seq_len="$SEQ_LEN" \
-    --lr=3E-4 \
+    --lr=8E-5 \
     --beta1=0.9 \
     --beta2=0.95 \
     --grad_clip="$CLIP_NORM" \
@@ -92,7 +92,7 @@ echo "" | tee -a "$log_file"
 # Second run Adam baseline (beta1=0.0)
 current=$((current + 1))
 echo "=== Combination $current/$total_combinations (Adam Baseline beta1=0.0) ===" | tee -a "$log_file"
-echo "Parameters: Adam baseline with beta1=0.0, beta2=0.95, lr=3e-4" | tee -a "$log_file"
+echo "Parameters: Adam baseline with beta1=0.0, beta2=0.95, lr=8e-5" | tee -a "$log_file"
 echo "Started at: $(date)" | tee -a "$log_file"
 
 python nanogpt_adamw_baseline_mixed_bf16_rope.py \

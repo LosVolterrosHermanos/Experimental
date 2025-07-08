@@ -180,7 +180,7 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
             linestyle = clipsnr_styles.get(clipsnr, '-')
             
             # Create label
-            label = f"g2={g2_val:.1e}, clipsnr={clipsnr:.1f}".replace('e+0', 'e+').replace('e-0', 'e-')
+            label = f"g2={g2_val:.1e}, clipsnr={clipsnr:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
             
             # Plot validation curves
             ax.loglog(tokens, val_losses, linestyle=linestyle, color=color, alpha=0.8, 
@@ -225,7 +225,7 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
     for clipsnr in sorted(clipsnr_values):
         style = clipsnr_styles[clipsnr]
         clipsnr_legend_elements.append(Line2D([0], [0], color='black', linestyle=style, 
-                                            label=f'clipsnr={clipsnr:.1f}'))
+                                            label=f'clipsnr={clipsnr:.1e}'))
     
     # Add the clipsnr legend
     clipsnr_legend = ax.legend(handles=clipsnr_legend_elements, loc='lower left', 
