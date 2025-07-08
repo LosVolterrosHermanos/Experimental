@@ -126,9 +126,9 @@ for tanea_g3 in "${TANEA_G3_VALUES[@]}"; do
         
         # Apply momentum flavor scaling to g3
         if [ "$momentum_flavor" = "mk2" ]; then
-            scaled_g3=$(echo "scale=10; $tanea_g3 * $MK2_SCALER" | bc -l)
+            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK2_SCALER:.10e}')")
         elif [ "$momentum_flavor" = "mk3" ]; then
-            scaled_g3=$(echo "scale=10; $tanea_g3 * $MK3_SCALER" | bc -l)
+            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK3_SCALER:.10e}')")
         else
             scaled_g3=$tanea_g3
         fi

@@ -237,21 +237,28 @@ def create_g3_momentum_visualization(results_data, adamw_baselines=None, output_
                              title='Momentum Flavor (line style)', fontsize=9, title_fontsize=10)
     ax.add_artist(flavor_legend)
     
-    # Create a third legend for g3 values with colors
-    g3_legend_elements = []
-    for g3 in sorted(g3_values):
-        color = g3_color_map[g3]
-        g3_legend_elements.append(Line2D([0], [0], color=color, linestyle='-', linewidth=3,
-                                        label=f'g3={g3:.1e}'.replace('e+0', 'e+').replace('e-0', 'e-')))
+    # Create colorbar for g3 values
+    import matplotlib.colors as mcolors
     
-    # Add the g3 color legend
-    g3_legend = ax.legend(handles=g3_legend_elements, loc='center left', 
-                         title='g3 value (color)', fontsize=9, title_fontsize=10,
-                         bbox_to_anchor=(1.02, 0.5))
-    ax.add_artist(g3_legend)
+    # Create a colormap normalization based on log scale of g3 values
+    g3_min = min(g3_values)
+    g3_max = max(g3_values)
+    norm = mcolors.LogNorm(vmin=g3_min, vmax=g3_max)
     
-    # Add text box to explain color coding
-    textstr = 'Plasma colormap: darker = smaller g3, brighter = larger g3'
+    # Create a ScalarMappable for the colorbar
+    sm = plt.cm.ScalarMappable(cmap=plt.cm.plasma, norm=norm)
+    sm.set_array([])
+    
+    # Add colorbar
+    cbar = plt.colorbar(sm, ax=ax, shrink=0.6, pad=0.15)
+    cbar.set_label('g3 value', rotation=270, labelpad=20, fontsize=12)
+    
+    # Set colorbar ticks to actual g3 values
+    cbar.set_ticks(g3_values)
+    cbar.set_ticklabels([f'{g3:.1e}'.replace('e+0', 'e+').replace('e-0', 'e-') for g3 in g3_values])
+    
+    # Add text box to explain line styles only (colorbar explains colors)
+    textstr = 'Line style = momentum flavor'
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
     ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
             verticalalignment='top', bbox=props)
