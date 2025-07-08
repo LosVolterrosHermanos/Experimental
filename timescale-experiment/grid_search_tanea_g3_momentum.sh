@@ -11,20 +11,25 @@
 # Fixed parameters (using best values from previous sweep)
 TANEA_KAPPA=0.75
 WEIGHT_DECAY_TS=100
-TRAIN_STEPS=50
+TRAIN_STEPS=200
 DECAY=""
 SEQ_LEN=1024
 BATCH_SIZE=8
 VAL_BATCH_SIZE=8
 VAL_STEPS=8
+CLIP_NORM=100.0
 
 # Fixed parameters from previous sweep (update these based on your best results)
 TANEA_G2=1E-4
 CLIPSNR=2.0
 
 # Arrays for grid search parameters
-TANEA_G3_VALUES=(1E-6 5E-6 1E-5 5E-5 1E-4)
+TANEA_G3_VALUES=(8E-5 4E-5 2E-5)
 MOMENTUM_FLAVOR_VALUES=("effective-clip" "mk2" "mk3")
+
+# Momentum flavor scalers
+MK2_SCALER=$(echo "scale=10; 11480/9332" | bc -l)
+MK3_SCALER=$(echo "scale=10; 11480/7198" | bc -l)
 
 # Counter for tracking progress
 total_combinations=$(( ${#TANEA_G3_VALUES[@]} * ${#MOMENTUM_FLAVOR_VALUES[@]} + 2 ))  # +2 for two Adam baselines
@@ -69,6 +74,7 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --lr=3E-4 \
     --beta1=0.9 \
     --beta2=0.95 \
+    --grad_clip="$CLIP_NORM" \
     --weight_decay=1E-3 \
     --attention_implementation="xla" \
     --results_dir "$results_dir"
@@ -95,9 +101,10 @@ python nanogpt_adamw_baseline_mixed_bf16_rope.py \
     --val_batch_size="$VAL_BATCH_SIZE" \
     --val_steps="$VAL_STEPS" \
     --seq_len="$SEQ_LEN" \
-    --lr=3E-4 \
+    --lr=8E-5 \
     --beta1=0.0 \
     --beta2=0.95 \
+    --grad_clip="$CLIP_NORM" \
     --weight_decay=1E-3 \
     --attention_implementation="xla" \
     --results_dir "$results_dir"
@@ -117,8 +124,17 @@ for tanea_g3 in "${TANEA_G3_VALUES[@]}"; do
     for momentum_flavor in "${MOMENTUM_FLAVOR_VALUES[@]}"; do
         current=$((current + 1))
         
+        # Apply momentum flavor scaling to g3
+        if [ "$momentum_flavor" = "mk2" ]; then
+            scaled_g3=$(echo "scale=10; $tanea_g3 * $MK2_SCALER" | bc -l)
+        elif [ "$momentum_flavor" = "mk3" ]; then
+            scaled_g3=$(echo "scale=10; $tanea_g3 * $MK3_SCALER" | bc -l)
+        else
+            scaled_g3=$tanea_g3
+        fi
+        
         echo "=== Combination $current/$total_combinations ===" | tee -a "$log_file"
-        echo "Parameters: tanea_g3=$tanea_g3, momentum_flavor=$momentum_flavor, tanea_g2=$TANEA_G2, clipsnr=$CLIPSNR" | tee -a "$log_file"
+        echo "Parameters: tanea_g3=$tanea_g3 (scaled: $scaled_g3), momentum_flavor=$momentum_flavor, tanea_g2=$TANEA_G2, clipsnr=$CLIPSNR" | tee -a "$log_file"
         echo "Started at: $(date)" | tee -a "$log_file"
         
         # Run the experiment
@@ -129,9 +145,10 @@ for tanea_g3 in "${TANEA_G3_VALUES[@]}"; do
             --val_steps="$VAL_STEPS" \
             --seq_len="$SEQ_LEN" \
             --tanea_g2="$TANEA_G2" \
-            --tanea_g3="$tanea_g3" \
+            --tanea_g3="$scaled_g3" \
             --tanea_kappa="$TANEA_KAPPA" \
             --clipsnr="$CLIPSNR" \
+            --grad_clip="$CLIP_NORM" \
             --weight_decay=1E-3 \
             --power_weight_decay=1.0 \
             --weight_decay_ts="$WEIGHT_DECAY_TS" \

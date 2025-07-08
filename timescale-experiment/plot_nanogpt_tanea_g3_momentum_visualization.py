@@ -148,6 +148,9 @@ def create_g3_momentum_visualization(results_data, adamw_baselines=None, output_
     g3_values = sorted(g3_groups.keys())
     colors = plt.cm.plasma(np.linspace(0.1, 0.9, len(g3_values)))  # Use plasma colormap
     
+    # Create g3 to color mapping for legend
+    g3_color_map = {g3: colors[i] for i, g3 in enumerate(g3_values)}
+    
     # Get unique momentum flavor values and assign line styles
     momentum_flavors = sorted(set(data['momentum_flavor'] for data in results_data))
     
@@ -234,10 +237,23 @@ def create_g3_momentum_visualization(results_data, adamw_baselines=None, output_
                              title='Momentum Flavor (line style)', fontsize=9, title_fontsize=10)
     ax.add_artist(flavor_legend)
     
+    # Create a third legend for g3 values with colors
+    g3_legend_elements = []
+    for g3 in sorted(g3_values):
+        color = g3_color_map[g3]
+        g3_legend_elements.append(Line2D([0], [0], color=color, linestyle='-', linewidth=3,
+                                        label=f'g3={g3:.1e}'.replace('e+0', 'e+').replace('e-0', 'e-')))
+    
+    # Add the g3 color legend
+    g3_legend = ax.legend(handles=g3_legend_elements, loc='center left', 
+                         title='g3 value (color)', fontsize=9, title_fontsize=10,
+                         bbox_to_anchor=(1.02, 0.5))
+    ax.add_artist(g3_legend)
+    
     # Add text box to explain color coding
-    textstr = 'Color = g3 value (plasma colormap)'
+    textstr = 'Plasma colormap: darker = smaller g3, brighter = larger g3'
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=12,
+    ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
             verticalalignment='top', bbox=props)
     
     # Set default output file if not provided
