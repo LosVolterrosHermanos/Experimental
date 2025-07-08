@@ -11,7 +11,7 @@
 # Fixed parameters (using best values from previous sweep)
 TANEA_KAPPA=0.75
 WEIGHT_DECAY_TS=100
-TRAIN_STEPS=200
+TRAIN_STEPS=20
 DECAY=""
 SEQ_LEN=1024
 BATCH_SIZE=8
@@ -21,7 +21,7 @@ CLIP_NORM=100.0
 
 # Fixed parameters from previous sweep (update these based on your best results)
 TANEA_G2=1E-4
-CLIPSNR=2.0
+CLIPSNR=1.0
 
 # Arrays for grid search parameters
 TANEA_G3_VALUES=(8E-5 4E-5 2E-5)
@@ -126,9 +126,9 @@ for tanea_g3 in "${TANEA_G3_VALUES[@]}"; do
         
         # Apply momentum flavor scaling to g3
         if [ "$momentum_flavor" = "mk2" ]; then
-            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK2_SCALER:.10e}')")
+            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK2_SCALER:.3e}')")
         elif [ "$momentum_flavor" = "mk3" ]; then
-            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK3_SCALER:.10e}')")
+            scaled_g3=$(python3 -c "print(f'{float('$tanea_g3') * $MK3_SCALER:.3e}')")
         else
             scaled_g3=$tanea_g3
         fi
