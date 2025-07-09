@@ -135,8 +135,8 @@ def create_g3_momentum_visualization(results_data, adamw_baselines=None, output_
             
             label_base = f"AdamW β1={config['beta1']:.1f} (lr={config['lr']:.1e}, β2={config['beta2']:.2f})".replace('e+0', 'e+').replace('e-0', 'e-')
             # Plot AdamW baseline with thick lines
-            ax.loglog(tokens, val_losses, marker=marker, linestyle='-', color=color, alpha=1.0, 
-                     markersize=6, linewidth=4, label=label_base)
+            ax.loglog(tokens, val_losses, linestyle='-', color=color, alpha=1.0, 
+                     linewidth=2, label=label_base)
     
     # Group results by g3 value
     g3_groups = defaultdict(list)
@@ -187,8 +187,8 @@ def create_g3_momentum_visualization(results_data, adamw_baselines=None, output_
             label = f"g3={g3_val:.1e}, {momentum_flavor}".replace('e+0', 'e+').replace('e-0', 'e-')
             
             # Plot validation curves
-            ax.loglog(tokens, val_losses, linestyle=linestyle, color=color, alpha=0.8, 
-                     markersize=3, linewidth=2, label=label, marker='s')
+            ax.loglog(tokens, val_losses, linestyle=linestyle, color=color, alpha=0.8,
+                        linewidth=2, label=label)
     
     # Set axis labels and title
     ax.set_xlabel('Training Tokens', fontsize=14)

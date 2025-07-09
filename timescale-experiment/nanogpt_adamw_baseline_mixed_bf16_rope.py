@@ -55,7 +55,7 @@ def train_step(state: TrainState, x: jnp.ndarray, y: jnp.ndarray):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train nanogpt with AdamW optimizer using mixed precision (bfloat16 matmuls) and RoPE")
     parser.add_argument(
-        "--train_steps", type=int, default=10000,
+        "--train_steps", type=int, default=96000,
         help="Number of training steps"
     )
     parser.add_argument(
@@ -67,7 +67,7 @@ def parse_args():
         help="Sequence length for training"
     )
     parser.add_argument(
-        "--val_batch_size", type=int, default=64,
+        "--val_batch_size", type=int, default=32,
         help="Validation batch size"
     )
     parser.add_argument(
@@ -92,7 +92,7 @@ def parse_args():
     )
     # Add AdamW hyperparameters
     parser.add_argument(
-        "--lr", type=float, default=3e-4,
+        "--lr", type=float, default=0.0018,
         help="Learning rate for AdamW optimizer"
     )
     parser.add_argument(
@@ -122,6 +122,19 @@ def parse_args():
     parser.add_argument(
         "--disable_validation", action="store_true",
         help="Disable validation loss computation for faster training"
+    )
+    # WSD scheduler parameters
+    parser.add_argument(
+        "--enable_wsd", action="store_true",
+        help="Enable WSD (Warmup-Stable-Decay) schedule using optax.chain"
+    )
+    parser.add_argument(
+        "--warmup_fraction", type=float, default=0.02,
+        help="Fraction of training steps for warmup phase (default: 0.1)"
+    )
+    parser.add_argument(
+        "--decay_fraction", type=float, default=0.2,
+        help="Final decay fraction for WSD schedule (default: 0.0)"
     )
     return parser.parse_args()
 
@@ -182,6 +195,9 @@ def main():
         "rope_base": args.rope_base,
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
+        "enable_wsd": args.enable_wsd,
+        "warmup_fraction": args.warmup_fraction,
+        "decay_fraction": args.decay_fraction,
         "precision": "mixed_bfloat16_rope"
     }
     
@@ -192,16 +208,37 @@ def main():
         jnp.array([config["train_steps"]])
     ]))
     
-    # Initialize AdamW optimizer
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(config['grad_clip']),
-        optax.adamw(
-            learning_rate=config['lr'],
-            b1=config['beta1'],
-            b2=config['beta2'],
-            weight_decay=config['weight_decay']
+    # Initialize AdamW optimizer with optional WSD schedule
+    if config["enable_wsd"]:
+        # Create WSD (Warmup-Stable-Decay) schedule using linear_onecycle_schedule
+        wsd_schedule = optax.schedules.linear_onecycle_schedule(
+            config["train_steps"],
+            config['lr'],
+            pct_start=config["warmup_fraction"],
+            pct_final=config["decay_fraction"],
+            div_factor=1.0,
+            final_div_factor=10000.0
         )
-    )
+        
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(config['grad_clip']),
+            optax.adamw(
+                learning_rate=wsd_schedule,
+                b1=config['beta1'],
+                b2=config['beta2'],
+                weight_decay=config['weight_decay']
+            )
+        )
+    else:
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(config['grad_clip']),
+            optax.adamw(
+                learning_rate=config['lr'],
+                b1=config['beta1'],
+                b2=config['beta2'],
+                weight_decay=config['weight_decay']
+            )
+        )
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -295,6 +332,10 @@ def main():
             logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             logger.info(f"  LR: {config['lr']}, Beta1: {config['beta1']}, Beta2: {config['beta2']}, WD: {config['weight_decay']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
+            if config["enable_wsd"]:
+                logger.info(f"  WSD Schedule: enabled (warmup fraction: {config['warmup_fraction']}, decay fraction: {config['decay_fraction']})")
+            else:
+                logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE\n")
     
     # Save results
@@ -307,12 +348,16 @@ def main():
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
+    wsd_suffix = ""
+    if config["enable_wsd"]:
+        wsd_suffix = f"_wsd_{config['warmup_fraction']}_{config['decay_fraction']}"
+    
     results_filename = (
         f"{config['results_dir']}/nanogpt_adamw_baseline_mixed_bf16_rope_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_"
         f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
-        f"attn_{config['attention_implementation']}.pkl"
+        f"attn_{config['attention_implementation']}{wsd_suffix}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
