@@ -134,9 +134,9 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
             marker = baseline_markers[i % len(baseline_markers)]
             
             label_base = f"AdamW β1={config['beta1']:.1f} (lr={config['lr']:.1e}, β2={config['beta2']:.2f})".replace('e+0', 'e+').replace('e-0', 'e-')
-            # Plot AdamW baseline with thick lines
-            ax.loglog(tokens, val_losses, marker=marker, linestyle='-', color=color, alpha=1.0, 
-                     markersize=6, linewidth=4, label=label_base)
+            # Plot AdamW baseline without markers
+            ax.loglog(tokens, val_losses, linestyle='-', color=color, alpha=1.0, 
+                     linewidth=2, label=label_base)
     
     # Group results by g2 value
     g2_groups = defaultdict(list)
@@ -144,13 +144,14 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
         g2_val = data['config']['tanea_g2']
         g2_groups[g2_val].append(data)
     
-    # Define colors for different g2 values
+    # Define colors for different g2 values using plasma colormap (0-0.8 range)
     g2_values = sorted(g2_groups.keys())
-    colors = plt.cm.Set1(np.linspace(0, 1, len(g2_values)))
+    colors = plt.cm.plasma(np.linspace(0, 0.8, len(g2_values)))
     
-    # Get unique clipsnr values and assign line styles
+    # Get unique clipsnr values and assign line styles with better spacing
     clipsnr_values = sorted(set(data['clipsnr'] for data in results_data))
-    available_styles = ['-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 5)), (0, (3, 5, 1, 5)), (0, (1, 1))]
+    # Use more distinct line styles and wider spacing
+    available_styles = ['-', '--', '-.', ':', (0, (5, 10)), (0, (3, 10, 1, 10)), (0, (1, 10)), (0, (5, 1, 3, 1, 1, 1))]
     
     # Create clipsnr to line style mapping
     clipsnr_styles = {}
@@ -182,9 +183,9 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
             # Create label
             label = f"g2={g2_val:.1e}, clipsnr={clipsnr:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
             
-            # Plot validation curves
-            ax.loglog(tokens, val_losses, linestyle=linestyle, color=color, alpha=0.8, 
-                     markersize=3, linewidth=2, label=label, marker='s')
+            # Plot validation curves without markers
+            ax.loglog(tokens, val_losses, linestyle=linestyle, color=color, alpha=0.9, 
+                     linewidth=2, label=label)
     
     # Set axis labels and title
     ax.set_xlabel('Training Tokens', fontsize=14)
@@ -232,11 +233,23 @@ def create_g2_clipsnr_visualization(results_data, adamw_baselines=None, output_f
                               title='Clipsnr (line style)', fontsize=9, title_fontsize=10)
     ax.add_artist(clipsnr_legend)
     
-    # Add text box to explain color coding
-    textstr = 'Color = g2 value'
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=12,
-            verticalalignment='top', bbox=props)
+    # Add colorbar for g2 values
+    import matplotlib.colors as mcolors
+    import matplotlib.cm as cm
+    
+    # Create a colorbar for g2 values using the same [0,0.8] range
+    norm = mcolors.Normalize(vmin=min(g2_values), vmax=max(g2_values))
+    # Create a custom colormap that uses only [0,0.8] of plasma
+    from matplotlib.colors import LinearSegmentedColormap
+    plasma_colors = plt.cm.plasma(np.linspace(0, 0.8, 256))
+    plasma_custom = LinearSegmentedColormap.from_list('plasma_custom', plasma_colors)
+    sm = cm.ScalarMappable(norm=norm, cmap=plasma_custom)
+    sm.set_array([])
+    
+    # Add colorbar to the plot
+    cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=30, pad=0.02)
+    cbar.set_label('g2 value', fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
     
     # Set default output file if not provided
     if output_file is None:
