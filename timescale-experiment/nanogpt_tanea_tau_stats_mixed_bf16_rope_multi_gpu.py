@@ -127,7 +127,7 @@ def _init_train_state_sharded(config, model, key, mesh):
     inputs = jax.ShapeDtypeStruct(shape=(1, config["seq_len"]), dtype=jnp.int32)
     
     def init(rng, inputs):
-        params = model.init(rng, inputs)
+        params = model.init(rng)
         
         # Initialize Tanea optimizer
         g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)

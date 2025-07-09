@@ -54,7 +54,7 @@ def _init_train_state_sharded(config, model, key, mesh):
     inputs = jax.ShapeDtypeStruct(shape=(1, config["seq_len"]), dtype=jnp.int32)
     
     def init(rng, inputs):
-        params = model.init(rng, inputs)
+        params = model.init(rng)
         
         # Initialize AdamW optimizer
         optimizer = optax.chain(
