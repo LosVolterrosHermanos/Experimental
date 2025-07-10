@@ -188,15 +188,15 @@ def parse_args():
         help="Tanea Kappa parameter"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=0.01,
+        "--weight_decay", type=float, default=1E-3,
         help="Weight decay parameter"
     )
     parser.add_argument(
-        "--power_weight_decay", type=float, default=0.0,
+        "--power_weight_decay", type=float, default=1.0,
         help="Power of weight decay parameter"
     )
     parser.add_argument(
-        "--weight_decay_ts", type=float, default=1.0,
+        "--weight_decay_ts", type=float, default=100.0,
         help="Timescale of weight decay parameter"
     )
     parser.add_argument(

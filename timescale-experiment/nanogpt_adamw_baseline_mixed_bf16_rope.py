@@ -104,7 +104,7 @@ def parse_args():
         help="Beta2 parameter for AdamW"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=0.01,
+        "--weight_decay", type=float, default=1E-3,
         help="Weight decay parameter for AdamW"
     )
     # RoPE specific parameters
@@ -213,7 +213,7 @@ def main():
         # Create WSD (Warmup-Stable-Decay) schedule using linear_onecycle_schedule
         wsd_schedule = optax.schedules.linear_onecycle_schedule(
             config["train_steps"],
-            config['lr'],
+            1.0,
             pct_start=config["warmup_fraction"],
             pct_final=config["decay_fraction"],
             div_factor=1.0,
@@ -223,11 +223,12 @@ def main():
         optimizer = optax.chain(
             optax.clip_by_global_norm(config['grad_clip']),
             optax.adamw(
-                learning_rate=wsd_schedule,
+                learning_rate=config['lr'],
                 b1=config['beta1'],
                 b2=config['beta2'],
                 weight_decay=config['weight_decay']
-            )
+            ),
+            optax.scale_by_schedule(wsd_schedule)
         )
     else:
         optimizer = optax.chain(
