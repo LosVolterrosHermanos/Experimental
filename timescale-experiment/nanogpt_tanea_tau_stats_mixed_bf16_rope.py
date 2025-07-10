@@ -200,7 +200,7 @@ def parse_args():
         help="Timescale of weight decay parameter"
     )
     parser.add_argument(
-        "--momentum_flavor", type=str, default="effective-clip",
+        "--momentum_flavor", type=str, default="mk3",
         choices=["effective-clip", "theory", "always-on", "strong-clip", "mk2", "mk3"],
         help="Tanea momentum flavor"
     )
