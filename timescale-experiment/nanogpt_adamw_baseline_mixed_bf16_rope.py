@@ -92,7 +92,7 @@ def parse_args():
     )
     # Add AdamW hyperparameters
     parser.add_argument(
-        "--lr", type=float, default=0.0018,
+        "--lr", type=float, default=16E-5,
         help="Learning rate for AdamW optimizer"
     )
     parser.add_argument(

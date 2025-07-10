@@ -172,11 +172,11 @@ def parse_args():
     )
     # Add Tanea hyperparameters
     parser.add_argument(
-        "--tanea_g2", type=float, default=0.0018,
+        "--tanea_g2", type=float, default=16E-5,
         help="Tanea G2 parameter"
     )
     parser.add_argument(
-        "--tanea_g3", type=float, default=0.0018,
+        "--tanea_g3", type=float, default=4E-5,
         help="Tanea G3 parameter"
     )
     parser.add_argument(
