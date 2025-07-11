@@ -15,6 +15,7 @@ import matplotlib.ticker as ticker
 import scipy.stats as stats
 import argparse
 import logging
+import functools
 from typing import Dict, List, Any
 from tqdm import tqdm
 
@@ -169,7 +170,6 @@ def _init_train_state_sharded(config, model, key, mesh):
     state = jax.jit(init, out_shardings=shardings)(key, inputs)
     return shardings, state
 
-@jax.jit
 def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: Mesh):
     """Sharded training step for multi-GPU data parallelism."""
     # Add sharding constraints for input data
@@ -314,7 +314,7 @@ def evaluate_validation_loss(state, val_dataset, config, mesh, val_steps=20):
         if steps_taken >= val_steps:
             break
             
-        loss, _ = train_step_sharded(state, x, y, mesh)  # Don't update state for validation
+        loss, _ = train_step_fn(state, x, y)  # Don't update state for validation
         total_loss += loss
         steps_taken += 1
     
@@ -351,6 +351,9 @@ def main():
     # Create device mesh for data parallelism
     mesh = Mesh(mesh_utils.create_device_mesh((jax.device_count(),)), ("data",))
     logger.info(f"Created device mesh: {mesh}")
+    
+    # Create JIT-compiled train step function with mesh frozen
+    train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))
     
     # Override INIT_STD if provided
     global INIT_STD
@@ -485,7 +488,7 @@ def main():
         x, y, w = next(train_iterator)
         
         # Forward and backward pass with sharding
-        loss, state = train_step_sharded(state, x, y, mesh)
+        loss, state = train_step_fn(state, x, y)
         
         # Update progress bar
         pbar.set_postfix(loss=f"{loss:.4f}")
