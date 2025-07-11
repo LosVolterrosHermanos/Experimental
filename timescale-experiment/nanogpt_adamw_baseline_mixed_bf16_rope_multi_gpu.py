@@ -56,16 +56,37 @@ def _init_train_state_sharded(config, model, key, mesh):
     def init(rng, inputs):
         params = model.init(rng)
         
-        # Initialize AdamW optimizer
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(config["grad_clip"]),
-            optax.adamw(
-                learning_rate=config["lr"],
-                b1=config["beta1"],
-                b2=config["beta2"],
-                weight_decay=config["weight_decay"]
+        # Initialize AdamW optimizer with optional WSD schedule
+        if config["enable_wsd"]:
+            # Create WSD (Warmup-Stable-Decay) schedule using linear_onecycle_schedule
+            wsd_schedule = optax.schedules.linear_onecycle_schedule(
+                config["train_steps"],
+                config["lr"],
+                pct_start=config["warmup_fraction"],
+                pct_final=config["decay_fraction"],
+                div_factor=1.0,
+                final_div_factor=10000.0
             )
-        )
+            
+            optimizer = optax.chain(
+                optax.clip_by_global_norm(config["grad_clip"]),
+                optax.adamw(
+                    learning_rate=wsd_schedule,
+                    b1=config["beta1"],
+                    b2=config["beta2"],
+                    weight_decay=config["weight_decay"]
+                )
+            )
+        else:
+            optimizer = optax.chain(
+                optax.clip_by_global_norm(config["grad_clip"]),
+                optax.adamw(
+                    learning_rate=config["lr"],
+                    b1=config["beta1"],
+                    b2=config["beta2"],
+                    weight_decay=config["weight_decay"]
+                )
+            )
         
         return TrainState.create(
             apply_fn=model.apply,
@@ -165,6 +186,19 @@ def parse_args():
         "--disable_validation", action="store_true",
         help="Disable validation loss computation for faster training"
     )
+    # WSD scheduler parameters
+    parser.add_argument(
+        "--enable_wsd", action="store_true",
+        help="Enable WSD (Warmup-Stable-Decay) schedule using optax.chain"
+    )
+    parser.add_argument(
+        "--warmup_fraction", type=float, default=0.1,
+        help="Fraction of training steps for warmup phase (default: 0.1)"
+    )
+    parser.add_argument(
+        "--decay_fraction", type=float, default=0.0,
+        help="Final decay fraction for WSD schedule (default: 0.0)"
+    )
     # Checkpoint parameters
     parser.add_argument(
         "--disable_checkpoint", action="store_true",
@@ -258,6 +292,9 @@ def main():
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
         "disable_checkpoint": args.disable_checkpoint,
+        "enable_wsd": args.enable_wsd,
+        "warmup_fraction": args.warmup_fraction,
+        "decay_fraction": args.decay_fraction,
         "precision": "mixed_bfloat16_rope",
         "num_devices": jax.device_count()
     }
@@ -362,6 +399,10 @@ def main():
             logger.info(f"  Optimizer: AdamW (lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']})")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
             logger.info(f"  Gradient Clipping: {config['grad_clip']}")
+            if config["enable_wsd"]:
+                logger.info(f"  WSD Schedule: enabled (warmup fraction: {config['warmup_fraction']}, decay fraction: {config['decay_fraction']})")
+            else:
+                logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
     
     # Save results
@@ -376,13 +417,16 @@ def main():
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
+    wsd_suffix = ""
+    if config["enable_wsd"]:
+        wsd_suffix = f"_wsd_{config['warmup_fraction']}_{config['decay_fraction']}"
     
     results_filename = (
         f"{config['results_dir']}/nanogpt_adamw_baseline_mixed_bf16_rope_multi_gpu_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
         f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
-        f"attn_{config['attention_implementation']}.pkl"
+        f"attn_{config['attention_implementation']}{wsd_suffix}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
@@ -400,7 +444,7 @@ def main():
             f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
             f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
             f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
-            f"attn_{config['attention_implementation']}.pkl"
+            f"attn_{config['attention_implementation']}{wsd_suffix}.pkl"
         )
         
         checkpoint_data = {

@@ -136,18 +136,22 @@ def _init_train_state_sharded(config, model, key, mesh):
         wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
         tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
 
-        # Create optimizer chain with optional linear decay
-        if config["enable_linear_decay"]:
-            # Create linear decay schedule
-            linear_decay_start_step = int(config["linear_decay_start"] * config["train_steps"])
-            linear_decay_steps = config["train_steps"] - linear_decay_start_step
-            
-            linear_decay_schedule = optax.linear_schedule(1.0, config["linear_decay_end"], linear_decay_steps, linear_decay_start_step)
+        # Create optimizer chain with optional WSD schedule
+        if config["enable_wsd"]:
+            # Create WSD (Warmup-Stable-Decay) schedule using linear_onecycle_schedule
+            wsd_schedule = optax.schedules.linear_onecycle_schedule(
+                config["train_steps"],
+                1.0,
+                pct_start=config["warmup_fraction"],
+                pct_final=config["decay_fraction"],
+                div_factor=1.0,
+                final_div_factor=10000.0
+            )
 
             optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 tanea,
-                optax.scale_by_schedule(linear_decay_schedule)
+                optax.scale_by_schedule(wsd_schedule)
             )
         else:
             optimizer = optax.chain(
@@ -251,16 +255,16 @@ def parse_args():
         help="Tanea momentum flavor"
     )
     parser.add_argument(
-        "--enable_linear_decay", action="store_true",
-        help="Enable linear decay schedule using optax.chain"
+        "--enable_wsd", action="store_true",
+        help="Enable WSD (Warmup-Stable-Decay) schedule using optax.chain"
     )
     parser.add_argument(
-        "--linear_decay_start", type=float, default=0.1,
-        help="Fraction of training steps when linear decay starts (default: 0.1)"
+        "--warmup_fraction", type=float, default=0.1,
+        help="Fraction of training steps for warmup phase (default: 0.1)"
     )
     parser.add_argument(
-        "--linear_decay_end", type=float, default=0.0,
-        help="Final value for linear decay (default: 0.0)"
+        "--decay_fraction", type=float, default=0.0,
+        help="Final decay fraction for WSD schedule (default: 0.0)"
     )
     # RoPE specific parameters
     parser.add_argument(
@@ -380,9 +384,9 @@ def main():
         "power_weight_decay": args.power_weight_decay,
         "weight_decay_ts": args.weight_decay_ts,
         "momentum_flavor": args.momentum_flavor,
-        "enable_linear_decay": args.enable_linear_decay,
-        "linear_decay_start": args.linear_decay_start,
-        "linear_decay_end": args.linear_decay_end,
+        "enable_wsd": args.enable_wsd,
+        "warmup_fraction": args.warmup_fraction,
+        "decay_fraction": args.decay_fraction,
         "rope_base": args.rope_base,
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
@@ -530,10 +534,10 @@ def main():
             logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
             logger.info(f"  Gradient Clipping: {config['grad_clip']}")
-            if config["enable_linear_decay"]:
-                logger.info(f"  Linear Decay: enabled (starting step: {config['linear_decay_start']*config['train_steps']}, end value: {config['linear_decay_end']})")
+            if config["enable_wsd"]:
+                logger.info(f"  WSD Schedule: enabled (warmup fraction: {config['warmup_fraction']}, decay fraction: {config['decay_fraction']})")
             else:
-                logger.info(f"  Linear Decay: disabled")
+                logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
     
     # Convert tau statistics lists to arrays
@@ -553,16 +557,16 @@ def main():
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    linear_decay_suffix = ""
-    if config["enable_linear_decay"]:
-        linear_decay_suffix = f"_linear_decay_{config['linear_decay_start']}_{config['linear_decay_end']}"
+    wsd_suffix = ""
+    if config["enable_wsd"]:
+        wsd_suffix = f"_wsd_{config['warmup_fraction']}_{config['decay_fraction']}"
     
     results_filename = (
         f"{config['results_dir']}/nanogpt_tanea_results_mixed_bf16_rope_multi_gpu_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
         f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-        f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
+        f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{wsd_suffix}.pkl"
     )
     
     with open(results_filename, 'wb') as f:
@@ -580,7 +584,7 @@ def main():
             f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
             f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
             f"g2_{config['tanea_g2']}_g3_{config['tanea_g3']}_delta_{config['tanea_delta']}_"
-            f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{linear_decay_suffix}.pkl"
+            f"flavor_{config['momentum_flavor']}_attn_{config['attention_implementation']}{wsd_suffix}.pkl"
         )
         
         checkpoint_data = {
