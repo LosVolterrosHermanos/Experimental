@@ -299,7 +299,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-def evaluate_validation_loss(state, val_dataset, config, mesh, val_steps=20):
+def evaluate_validation_loss(state, val_dataset, config, train_step_fn, val_steps=20):
     """Evaluate validation loss with multi-GPU support"""
     total_loss = 0.0
     steps_taken = 0
@@ -499,7 +499,7 @@ def main():
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
-                val_loss = evaluate_validation_loss(state, val_dataset, config, mesh, config["val_steps"])
+                val_loss = evaluate_validation_loss(state, val_dataset, config, train_step_fn, config["val_steps"])
             
             total_tokens = step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(step)
