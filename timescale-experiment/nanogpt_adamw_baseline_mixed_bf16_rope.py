@@ -130,11 +130,11 @@ def parse_args():
     )
     parser.add_argument(
         "--warmup_fraction", type=float, default=0.02,
-        help="Fraction of training steps for warmup phase (default: 0.1)"
+        help="Fraction of training steps for warmup phase (default: 0.02)"
     )
     parser.add_argument(
         "--decay_fraction", type=float, default=0.2,
-        help="Final decay fraction for WSD schedule (default: 0.0)"
+        help="Final decay fraction for WSD schedule (default: 0.2s)"
     )
     return parser.parse_args()
 
