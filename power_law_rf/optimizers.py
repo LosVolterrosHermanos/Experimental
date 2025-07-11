@@ -244,14 +244,21 @@ def tanea_optimizer(
         wd = lambda _: wd
 
     
-    ##  The power of 1.0 ought to correctly initialize the tau estimate (~~tau will be like ~p once 1/t is smaller)
-    tau_reg = lambda tau, t : jnp.maximum(tau, jnp.pow(1.0+t,-1.0))
+    ## Helper functions
+    clip_tohalf = lambda tau : jnp.minimum(tau,0.5)
+    
+    ##  This function acocomplishes three things:
+    ## 1. tau is not a faithful estimate of p if p << 1/t.  So this function never ouputs less than 1/t. 
+    ## 2. The tau-updater will converge to p/(1+p) in an idealized environment.  The formula will output p instead of p/(1+p).
+    ## 3. Since the inverse of this function is tau/(1-tau), which is correct only when tau < 0.5, we clip to tau < 0.5 first.
+    tau_reg = lambda tau, t : jnp.maximum(clip_tohalf(tau)/(1.0-clip_tohalf(tau)), jnp.pow(1.0+t,-1.0))
     root_tau_reg = lambda tau, t : jnp.sqrt(tau_reg(tau, t))
     effective_time = lambda tau, t: jnp.maximum(tau*t,1.0)  
     quarter_root_tau_reg = lambda tau, t : jnp.power(tau_reg(tau, t),0.25)
 
 
-    tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
+    #In an idealized environment, this will lead to tau storing p/(1+p)
+    tau_updater = lambda tau,u,v,t : (u**2)/ ( (u**2) + v + epsilon**2)
     if tau_flavor == "second-moment":
         tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
     elif tau_flavor == "first-moment":
