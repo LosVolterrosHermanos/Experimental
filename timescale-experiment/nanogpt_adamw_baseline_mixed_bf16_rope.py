@@ -211,14 +211,15 @@ def main():
     # Initialize AdamW optimizer with optional WSD schedule
     if config["enable_wsd"]:
         # Create WSD (Warmup-Stable-Decay) schedule using linear_onecycle_schedule
-        wsd_schedule = optax.schedules.linear_onecycle_schedule(
-            config["train_steps"],
-            1.0,
-            pct_start=config["warmup_fraction"],
-            pct_final=config["decay_fraction"],
-            div_factor=1.0,
-            final_div_factor=10000.0
-        )
+        wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
+        # wsd_schedule = optax.schedules.linear_onecycle_schedule(
+        #     config["train_steps"],
+        #     1.0,
+        #     pct_start=config["warmup_fraction"],
+        #     pct_final=config["decay_fraction"],
+        #     div_factor=1.0,
+        #     final_div_factor=10000.0
+        # )
         
         optimizer = optax.chain(
             optax.clip_by_global_norm(config['grad_clip']),
