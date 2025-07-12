@@ -265,10 +265,10 @@ def tanea_optimizer(
         tau_updater = lambda tau,u,v,t : (jnp.abs(u))/ ( (jnp.abs(u)) + jnp.sqrt(v) + epsilon)
     elif tau_flavor == "second-moment-massive":
         tau_updater = lambda tau,u,v,t : (u**2)*(root_tau_reg(tau,t)*magic_tau) / ( (u**2)*(root_tau_reg(tau, t)*magic_tau) + v + epsilon**2)
-    elif tau_flavor == "first-moment-massive-no-clip":
+    elif tau_flavor == "first-moment-massive":
         tau_updater = lambda tau,u,v,t : jnp.abs(u)*(quarter_root_tau_reg(tau,t)*magic_tau) / ( jnp.abs(u*(quarter_root_tau_reg(tau, t)*magic_tau)) + jnp.sqrt(v) + epsilon)
     else:
-        raise ValueError(f"Unknown tau_flavor: {tau_flavor}. Must be 'second-moment-massive' or 'first-moment-massive'")
+        raise ValueError(f"Unknown tau_flavor: {tau_flavor}. Must be 'second-moment', 'first-moment', 'second-moment-massive', or 'first-moment-massive'")
 
 
     ## After removing gradient clipping in commit 70fba51, the gpt shows consistent training instabilities, suggesting that some amount of gradient clipping is needed.  The following command is applied post-v-tau updates, but before the m-update.  Clipping to a fixed multiple (4x) of the standard deviation is optimal in contexts where the standard deviation exists.  The 4x in principle should be tuned.
