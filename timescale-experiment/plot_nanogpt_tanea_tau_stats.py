@@ -275,11 +275,14 @@ def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_base
     """Create learning curves plot showing training and validation losses."""
     
     fig, ax = plt.subplots(figsize=(12, 8))
+
+    ax.axhline(3.28, linestyle=':', color='grey', alpha=0.5, linewidth=2)
     
     # Plot AdamW baselines first if available
     if adamw_baselines:
-        baseline_colors = ['black', 'gray']
-        baseline_markers = [('o', 's'), ('v', '^')]
+        # Use greyscale for baseline colors
+        baseline_colors = [str(g) for g in np.linspace(0.0, 0.7, len(adamw_baselines))]
+        #baseline_markers = [('o', 's'), ('v', '^')]
         
         for i, baseline in enumerate(adamw_baselines):
             config = baseline['config']
@@ -293,14 +296,14 @@ def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_base
             tokens = steps * tokens_per_step
             
             color = baseline_colors[i % len(baseline_colors)]
-            train_marker, val_marker = baseline_markers[i % len(baseline_markers)]
+            #train_marker, val_marker = baseline_markers[i % len(baseline_markers)]
             
             label_base = f"AdamW β1={config['beta1']:.1f}, lr={config['lr']:.1e}, β2={config['beta2']:.2f}, wd={config['weight_decay']:.1e}".replace('e+0', 'e+').replace('e-0', 'e-')
             # Plot AdamW baseline with thick lines
-            ax.loglog(tokens, train_losses, marker=train_marker, linestyle='-', color=color, alpha=0.8, 
-                     markersize=5, linewidth=3, label=label_base+" (train)")
-            ax.loglog(tokens, val_losses, marker=val_marker, linestyle='-', color=color, alpha=1.0, 
-                     markersize=5, linewidth=3, label=label_base+" (val)")
+            # ax.loglog(tokens, train_losses, linestyle='-', color=color, alpha=0.8, 
+            #          linewidth=2, label=label_base+" (train)")
+            ax.loglog(tokens, val_losses, linestyle='-', color=color, alpha=1.0, 
+                     linewidth=2, label=label_base+" (val)")
     
     # Plot RMSprop+Dana baseline if available
     if rmsprop_dana_baseline:
@@ -325,10 +328,10 @@ def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_base
         
         label_base = f"RMSprop+Dana Baseline, g2={g2_str}, g3={g3_str}, κ={kappa_str}"
         # Plot RMSprop+Dana baseline in dark red with thick lines
-        ax.loglog(tokens, train_losses, 'o-', color='darkred', alpha=0.8, 
-                 markersize=5, linewidth=3, label=label_base+" (train)")
-        ax.loglog(tokens, val_losses, 's-', color='darkred', alpha=1.0, 
-                 markersize=5, linewidth=3, label=label_base+" (val)")
+        # ax.loglog(tokens, train_losses, 'o-', color='darkred', alpha=0.8, 
+        #          markersize=5, linewidth=3, label=label_base+" (train)")
+        ax.loglog(tokens, val_losses, '-', color='darkred', alpha=1.0, 
+                linewidth=2, label=label_base+" (val)")
     
     # Use different colors for different Tanea configurations
     colors = plt.cm.tab20(np.linspace(0, 1.0, len(results_data)))
@@ -354,8 +357,8 @@ def create_learning_curves(results_data, adamw_baselines=None, rmsprop_dana_base
         # Plot training and validation curves
         # ax.loglog(tokens, train_losses, 'o-', color=color, alpha=0.7, 
         #          markersize=4, linewidth=2, label=f'{label_base} (train)')
-        ax.loglog(tokens, val_losses, 's-', color=color, alpha=0.7, 
-                 markersize=2, linewidth=1, label=f'{label_base} (val)')
+        ax.loglog(tokens, val_losses, color=color, alpha=1.0, 
+                    linewidth=2, label=f'{label_base} (val)')
     
     # Set axis labels and title
     ax.set_xlabel('Training Tokens')

@@ -299,7 +299,7 @@ def tanea_optimizer(
     elif momentum_flavor == "theory":
         g3_momentum_term = lambda u, v, tau, t: abs(u)/((jnp.abs(u)*root_tau_reg(tau, t)+jnp.sqrt(v)+epsilon) * (jnp.sqrt(v)+epsilon) )
     elif momentum_flavor == "always-on":
-        g3_momentum_term = lambda u, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+        g3_momentum_term = lambda u, v, tau, t: tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
         #g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))*quarter_root_tau_reg(tau, t)/(v+epsilon**2)
     elif momentum_flavor == "strong-clip":
         g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))/(v+epsilon**2)
