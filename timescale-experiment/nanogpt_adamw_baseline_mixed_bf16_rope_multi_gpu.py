@@ -72,11 +72,12 @@ def _init_train_state_sharded(config, model, key, mesh):
             optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 optax.adamw(
-                    learning_rate=wsd_schedule,
+                    learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
                     weight_decay=config["weight_decay"]
-                )
+                ),
+                optax.scale_by_schedule(wsd_schedule)
             )
         else:
             optimizer = optax.chain(
