@@ -38,7 +38,7 @@ from flax.core import FrozenDict
 from flax.training.train_state import TrainState
 from flax import linen as nn
 
-LOG_STEPS_BASE = 1.1
+LOG_STEPS_BASE = 1.01
 INIT_STD = 0.02
 
 # Set up logging
@@ -212,11 +212,8 @@ def evaluate_validation_loss(state, val_dataset, config, train_step_fn, val_step
     total_loss = 0.0
     steps_taken = 0
     
-    # Calculate per-device batch size
-    per_device_val_batch_size = config["val_batch_size"] // jax.device_count()
-    
-    # Create a fresh iterator each time we evaluate
-    val_iterator = val_dataset.iterate_once(per_device_val_batch_size, config["seq_len"])
+    # Create a fresh iterator each time we evaluate validation loss, which will be sharded across devices
+    val_iterator = val_dataset.iterate_once(config["val_batch_size"], config["seq_len"])
     
     for x, y, w in val_iterator:
         if steps_taken >= val_steps:
@@ -347,8 +344,8 @@ def main():
             val_files_count=1
         )
     
-    # Create training iterator with per-device batch size
-    train_iterator = train_dataset.iterate_once(config["per_device_batch_size"], config["seq_len"])
+    # Create training iterator with full batch size, which JAX will automatically shard across devices
+    train_iterator = train_dataset.iterate_once(config["batch_size"], config["seq_len"])
     
     # Storage for losses and metrics
     metrics_history = {
