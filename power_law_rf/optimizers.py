@@ -187,7 +187,6 @@ class TaneaOptimizerState(NamedTuple):
   v: base.Updates
   tau: base.Updates
 
-
 def tanea_optimizer(
     g2: base.ScalarOrSchedule,
     g3: base.ScalarOrSchedule,
@@ -305,6 +304,8 @@ def tanea_optimizer(
     elif momentum_flavor == "adam":
         g3_momentum_term = lambda u, v, tau, t: 1.0/((jnp.sqrt(v)+epsilon))
     elif momentum_flavor == "always-on":
+        g3_momentum_term = lambda u, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+    elif momentum_flavor == "always-on-mk2":
         g3_momentum_term = lambda u, v, tau, t: tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
         #g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))*quarter_root_tau_reg(tau, t)/(v+epsilon**2)
     elif momentum_flavor == "strong-clip":
@@ -314,7 +315,7 @@ def tanea_optimizer(
     elif momentum_flavor == "mk3":
         g3_momentum_term = lambda u, v, tau, t: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     else:
-        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'strong-clip', 'mk2', or 'mk3'")  
+        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'always-on-mk2', 'strong-clip', 'mk2', or 'mk3'")  
 
     def init_fn(params):
 
@@ -389,5 +390,122 @@ def tanea_optimizer(
         count_inc = numerics.safe_increment(state.count)
 
         return updates, TaneaOptimizerState(count=count_inc, m=new_m, v=new_v, tau=new_tau)
+
+    return base.GradientTransformation(init_fn, update_fn)
+
+
+class AdamWOptimizerState_withtau(NamedTuple):
+  """State for the Tanea algorithm."""
+  count: chex.Array  # shape=(), dtype=jnp.int32.
+  m: base.Updates
+  v: base.Updates
+  tau: base.Updates
+  vtau: base.Updates
+
+def adamw_optimizer_withtau(
+    Delta: base.ScalarOrSchedule = None,
+    epsilon: float = 1e-8,
+    lr : Optional[base.ScalarOrSchedule] = None,
+    beta_1 : Optional[base.ScalarOrSchedule] = None,
+    beta_2 : Optional[base.ScalarOrSchedule] = None,
+    wd : Optional[base.ScalarOrSchedule] = None,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+  ) -> base.GradientTransformation:
+    """AdamW optimizer with tau.  Implements AdamW (NO BIAS CORRECTION) and stores tau.
+
+    Args:
+        Delta: A scalar or schedule determining the tau decay rate.
+        epsilon: Small constant for numerical stability.
+        lr: A scalar or schedule determining the learning rate.
+        beta_1: A scalar or schedule determining the first momentum decay rate.
+        beta_2: A scalar or schedule determining the second momentum decay rate.
+        wd: A scalar or schedule determining the weight decay.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator; if
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    if Delta is None:
+        Delta = powerlaw_schedule(1.0, 0.0, -1.0, 8.0)
+    elif not callable(Delta):
+        Delta = lambda _: Delta
+    if beta_1 is None:
+        beta_1 = lambda _: 0.9
+    if beta_2 is None:
+        beta_2 = lambda _: 0.95
+    if wd is None:
+        wd = lambda _: 1e-3
+    if lr is None:
+        lr = lambda _: 1e-4
+    elif not callable(lr):
+        lr = lambda _: lr
+
+    #In an idealized environment, this will lead to tau storing p/(1+p)
+    tau_updater = lambda tau,u,v,t : (u**2)/ ( (u**2) + v + epsilon**2)
+
+    def init_fn(params):
+
+        m = otu.tree_zeros_like(params, dtype=y_dtype)  #First-Momentum
+        v = otu.tree_zeros_like(params, dtype=y_dtype)  #Second-Momentum
+        tau = otu.tree_zeros_like(params, dtype=y_dtype)  #Tau
+        vtau = otu.tree_zeros_like(params, dtype=y_dtype)  #vtau
+        return AdamWOptimizerState_withtau(count=jnp.zeros([], jnp.int32), m=m, v=v, tau=tau, vtau=vtau)
+
+    def update_fn(updates, state, params):
+
+        new_wd = wd(state.count)
+        newDelta = Delta(state.count)
+        newlr = lr(state.count)
+        new_beta_1 = beta_1(state.count)
+        new_beta_2 = beta_2(state.count)
+
+        new_v = jax.tree.map(
+            lambda v,u : None if v is None else v*(1-new_beta_2) + new_beta_2*(u**2),
+            state.v,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+        
+        new_vtau = jax.tree.map(
+            lambda vtau,u : None if vtau is None else vtau*(1-newDelta) + newDelta*(u**2),
+            state.vtau,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        new_tau = jax.tree.map(
+            lambda tau,u,v : None if tau is None else tau*(1-newDelta) + newDelta*tau_updater(tau, u, v, state.count),
+            state.tau,
+            updates,
+            new_vtau,
+            is_leaf=lambda x: x is None,
+        )
+
+        new_m = jax.tree.map(
+            lambda m,u : None if m is None else m*(1-new_beta_1) + new_beta_1*u,
+            state.m,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        updates = jax.tree.map(
+            lambda m,v,p : None if m is None else -newlr*(m/(jnp.sqrt(v)+epsilon) + new_wd*p),
+            new_m,
+            new_v,
+            params,
+            is_leaf=lambda x: x is None,
+        )
+
+        new_m = otu.tree_cast(new_m, y_dtype)
+        new_v = otu.tree_cast(new_v, y_dtype)
+        new_tau = otu.tree_cast(new_tau, y_dtype)
+        new_vtau = otu.tree_cast(new_vtau, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, AdamWOptimizerState_withtau(count=count_inc, m=new_m, v=new_v, tau=new_tau, vtau=new_vtau)
 
     return base.GradientTransformation(init_fn, update_fn)
