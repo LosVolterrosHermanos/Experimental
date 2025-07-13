@@ -61,6 +61,7 @@ def parse_args():
     parser.add_argument("--g3_over_g2", type=float, default=0.01, help="G3 to G2 ratio for momentum")
     parser.add_argument("--tanea_lr_scalar", type=float, default=1e-2, help="Tanea learning rate scalar")
     parser.add_argument("--tanea_global_exponent", type=float, default=0.0, help="Tanea global time exponent")
+    parser.add_argument("--tanea_kappa", type=float, default=None, help="Tanea kappa parameter to override powerlaw_schedule exponent")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="Adam beta2 parameter (also used for RMSprop decay in RMSprop+Dana)")
   
     # Label noise parameters
@@ -82,6 +83,8 @@ def parse_args():
     parser.add_argument("--disable_tanea_always_on_mk2", action="store_true", help="Disable Tanea (always-on-mk2) optimizer")
     parser.add_argument("--enable_tanea_mk3", action="store_true", default=True, help="Enable Tanea (mk3) optimizer")
     parser.add_argument("--disable_tanea_mk3", action="store_true", help="Disable Tanea (mk3) optimizer")
+    parser.add_argument("--enable_tanea_kappa1", action="store_true", help="Enable Tanea (kappa1) optimizer")
+    parser.add_argument("--disable_tanea_kappa1", action="store_true", help="Disable Tanea (kappa1) optimizer")
     parser.add_argument("--enable_tanea_g3zero", action="store_true", default=True, help="Enable Tanea G3=0 (formerly TarMSProp-SGD) optimizer")
     parser.add_argument("--disable_tanea_g3zero", action="store_true", help="Disable Tanea G3=0 optimizer")
     parser.add_argument("--enable_rmsprop_dana", action="store_true", default=True, help="Enable RMSprop+Dana optimizer")
@@ -413,16 +416,25 @@ def get_traceK(alpha, v):
     return population_trace
 
 
-def get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
+def get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, tanea_kappa=None):
     """Get Tanea hyperparameters."""
     kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
     learning_rate = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
+    
+    # Use tanea_kappa if provided, otherwise use default exponent
+    g3_exponent = -1.0*tanea_kappa if tanea_kappa is not None else -tanea_global_exponent-(1.0 - kappa_b) / (2 * alpha)
+    
     tanea_params = TaneaHparams(
         g2=powerlaw_schedule(tanea_lr_scalar*learning_rate, 0.0, -tanea_global_exponent, 1.0),
-        g3=powerlaw_schedule(tanea_lr_scalar*learning_rate*g3_over_g2, 0.0, -tanea_global_exponent-(1.0 - kappa_b) / (2 * alpha), 1.0),
+        g3=powerlaw_schedule(tanea_lr_scalar*learning_rate*g3_over_g2, 0.0, g3_exponent, 1.0),
         delta=powerlaw_schedule(1.0, 0.0, -1.0, 4.0+2*(alpha+beta)/(2*alpha))
     )
     return tanea_params
+
+
+def get_tanea_kappa1_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, tanea_kappa=None):
+    """Get Tanea kappa1 hyperparameters (same as tanea for now)."""
+    return get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, 1.0, traceK, tanea_lr_scalar, tanea_global_exponent, 1.0)
 
 
 def get_tarmsprop_sgd_hparams(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent):
@@ -497,6 +509,7 @@ def main():
     enable_tanea_mk2 = args.enable_tanea_mk2 and not args.disable_tanea_mk2
     enable_tanea_always_on_mk2 = args.enable_tanea_always_on_mk2 and not args.disable_tanea_always_on_mk2
     enable_tanea_mk3 = args.enable_tanea_mk3 and not args.disable_tanea_mk3
+    enable_tanea_kappa1 = args.enable_tanea_kappa1 and not args.disable_tanea_kappa1
     enable_tanea_g3zero = args.enable_tanea_g3zero and not args.disable_tanea_g3zero
     enable_rmsprop_dana = args.enable_rmsprop_dana and not args.disable_rmsprop_dana
     enable_adam = args.enable_adam and not args.disable_adam
@@ -516,7 +529,7 @@ def main():
     print(f"Label noise parameters: Student-t DOF={args.student_t_dof}, σ={args.sigma}")
     print(f"Enabled optimizers: Tanea={enable_tanea}, TaneaTheory={enable_tanea_theory}, TaneaAlwaysOn={enable_tanea_always_on}")
     print(f"                   TaneaStrongClip={enable_tanea_strong_clip}, TaneaFirstMoment={enable_tanea_first_moment}, TaneaMk2={enable_tanea_mk2}")
-    print(f"                   TaneaAlwaysOnMk2={enable_tanea_always_on_mk2}, TaneaMk3={enable_tanea_mk3}")
+    print(f"                   TaneaAlwaysOnMk2={enable_tanea_always_on_mk2}, TaneaMk3={enable_tanea_mk3}, TaneaKappa1={enable_tanea_kappa1}")
     print(f"                   TaneaG3Zero={enable_tanea_g3zero}, RMSpropDana={enable_rmsprop_dana}, Adam={enable_adam}")
     print(f"Results directory: {args.results_dir}")
     print("="*60)
@@ -548,36 +561,40 @@ def main():
         optimizers_dict = {}
         
         if enable_tanea:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta)
         
         if enable_tanea_theory:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_theory'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="theory")
         
         if enable_tanea_always_on:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_always_on'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on")
         
         if enable_tanea_strong_clip:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_strong_clip'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="strong-clip")
         
         if enable_tanea_first_moment:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_first_moment'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, tau_flavor="first-moment")
         
         if enable_tanea_mk2:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_mk2'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="mk2")
         
         if enable_tanea_always_on_mk2:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_always_on_mk2'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on-mk2")
         
         if enable_tanea_mk3:
-            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
+            tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
             optimizers_dict['tanea_mk3'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="mk3")
+        
+        if enable_tanea_kappa1:
+            tanea_kappa1_hparams = get_tanea_kappa1_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
+            optimizers_dict['tanea_kappa1'] = tanea_optimizer(tanea_kappa1_hparams.g2, tanea_kappa1_hparams.g3, tanea_kappa1_hparams.delta)
         
         if enable_tanea_g3zero:
             tanea_g3zero_hparams = get_tarmsprop_sgd_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
@@ -645,6 +662,8 @@ def main():
             enabled_tanea_opts.append(('tanea_always_on_mk2', 'Tanea (Always-On-MK2)'))
         if enable_tanea_mk3:
             enabled_tanea_opts.append(('tanea_mk3', 'Tanea (MK3)'))
+        if enable_tanea_kappa1:
+            enabled_tanea_opts.append(('tanea_kappa1', 'Tanea (Kappa1)'))
         if enable_rmsprop_dana:
             enabled_tanea_opts.append(('rmsprop_dana', 'RMSprop+Dana'))
 
@@ -670,6 +689,7 @@ def main():
                 'tanea_mk2': 'magenta',
                 'tanea_always_on_mk2': 'violet',
                 'tanea_mk3': 'darkmagenta',
+                'tanea_kappa1': 'darkgreen',
                 'tanea_g3zero': 'blue',
                 'rmsprop_dana': 'darkred',
                 'adam': 'green'
@@ -692,6 +712,8 @@ def main():
                             display_name = 'TANEA (ALWAYS-ON-MK2)'
                         elif optimizer_name == 'tanea_mk3':
                             display_name = 'TANEA (MK3)'
+                        elif optimizer_name == 'tanea_kappa1':
+                            display_name = 'TANEA (KAPPA1)'
                         elif optimizer_name == 'rmsprop_dana':
                             display_name = f'RMSPROP+DANA (β₂={args.adam_beta2})'
                         elif optimizer_name == 'adam':
@@ -893,6 +915,8 @@ def main():
                         display_name = 'TANEA (ALWAYS-ON-MK2)'
                     elif optimizer_name == 'tanea_mk3':
                         display_name = 'TANEA (MK3)'
+                    elif optimizer_name == 'tanea_kappa1':
+                        display_name = 'TANEA (KAPPA1)'
                     elif optimizer_name == 'rmsprop_dana':
                         display_name = 'RMSPROP+DANA'
                     
@@ -922,6 +946,8 @@ def main():
                         display_name = 'TANEA (ALWAYS-ON-MK2)'
                     elif optimizer_name == 'tanea_mk3':
                         display_name = 'TANEA (MK3)'
+                    elif optimizer_name == 'tanea_kappa1':
+                        display_name = 'TANEA (KAPPA1)'
                     
                     print(f"    {display_name}:")
                     print(f"      Final tau mean: {final_mean:.6f}")
