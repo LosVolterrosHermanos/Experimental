@@ -6,6 +6,9 @@ export ZONE=us-central2-b
 export ACCELERATOR_TYPE=v4-32
 export RUNTIME_VERSION=tpu-ubuntu2204-base
 
+gcloud config set project $PROJECT_ID
+gcloud config set compute/zone $ZONE
+
 gcloud compute tpus tpu-vm create $TPU_NAME \
     --network=dana-star-network \
     --project=$PROJECT_ID \
@@ -13,3 +16,16 @@ gcloud compute tpus tpu-vm create $TPU_NAME \
     --accelerator-type=$ACCELERATOR_TYPE \
     --version=$RUNTIME_VERSION \
     --preemptible
+
+gcloud compute tpus tpu-vm ssh ${TPU_NAME} \
+  --zone=${ZONE} \
+  --project=${PROJECT_ID} \
+  --worker=all \
+  --command='git clone -b timescale-experiment https://github.com/LosVolterrosHermanos/Experimental'
+
+
+gcloud compute tpus tpu-vm ssh ${TPU_NAME} \
+  --zone=${ZONE} \
+  --project=${PROJECT_ID} \
+  --worker=all \
+  --command='bash Experimental/gcloud/setup.sh'
