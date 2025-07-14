@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Label Noise Experiment for Momentum Strategy Comparison.
+MoE per-expert loss experiment.
 
 This script trains Mixture of Experts PLRF models using different optimizers
 (Tanea with different momentum flavors, TarMSProp-SGD, Adam) with added label noise
