@@ -23,7 +23,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision import GPTWithRoPE, ModelConfig
+from nanogpt_rope_mixed_precision import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -301,6 +301,11 @@ def parse_args():
         "--disable_checkpoint", action="store_true",
         help="Disable saving model weights checkpoint"
     )
+    parser.add_argument(
+        "--model_size", type=str, default="GPT2-nano",
+        choices=["GPT2-nano", "GPT2-medium", "GPT2-large", "GPT2-jumbo"],
+        help="Model size to use"
+    )
     return parser.parse_args()
 
 def evaluate_validation_loss(state, val_dataset, config, train_step_fn, val_steps=20):
@@ -397,6 +402,7 @@ def main():
         "grad_clip": args.grad_clip,
         "clipsnr": args.clipsnr,
         "disable_checkpoint": args.disable_checkpoint,
+        "model_size": args.model_size,
         "precision": "mixed_bfloat16_rope",
         "num_devices": jax.device_count()
     }
@@ -410,10 +416,9 @@ def main():
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
-    model_config = ModelConfig(
-        rope_base=config["rope_base"],
-        attention_implementation=config["attention_implementation"]
-    )
+    model_config = get_model_config(config["model_size"])
+    model_config.rope_base = config["rope_base"]
+    model_config.attention_implementation = config["attention_implementation"]
     model = GPTWithRoPE(model_config, mixed_precision=True, init_std=config["init_std"])
     
     # Initialize sharded train state

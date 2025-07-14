@@ -48,6 +48,69 @@ class ModelConfig:
     attention_implementation: str = 'naive'
 
 
+# GPT-2 model size configurations
+GPT2_CONFIGS = {
+    'GPT2-nano': ModelConfig(
+        vocab_size=50257,
+        n_head=12,
+        n_embd=768,
+        block_size=1024,
+        n_layer=12,
+        dropout_rate=0.1,
+        rope_base=10000.0,
+        attention_implementation='naive'
+    ),
+    'GPT2-medium': ModelConfig(
+        vocab_size=50257,
+        n_head=16,
+        n_embd=1024,
+        block_size=1024,
+        n_layer=24,
+        dropout_rate=0.1,
+        rope_base=10000.0,
+        attention_implementation='naive'
+    ),
+    'GPT2-large': ModelConfig(
+        vocab_size=50257,
+        n_head=20,
+        n_embd=1280,
+        block_size=1024,
+        n_layer=36,
+        dropout_rate=0.1,
+        rope_base=10000.0,
+        attention_implementation='naive'
+    ),
+    'GPT2-jumbo': ModelConfig(
+        vocab_size=50257,
+        n_head=25,
+        n_embd=1600,
+        block_size=1024,
+        n_layer=48,
+        dropout_rate=0.1,
+        rope_base=10000.0,
+        attention_implementation='naive'
+    )
+}
+
+
+def get_model_config(model_name: str) -> ModelConfig:
+    """Get model configuration by name.
+    
+    Args:
+        model_name: Name of the model ('GPT2-nano', 'GPT2-medium', 'GPT2-large', 'GPT2-jumbo')
+        
+    Returns:
+        ModelConfig: Configuration for the specified model
+        
+    Raises:
+        ValueError: If model_name is not recognized
+    """
+    if model_name not in GPT2_CONFIGS:
+        available_models = ', '.join(GPT2_CONFIGS.keys())
+        raise ValueError(f"Unknown model '{model_name}'. Available models: {available_models}")
+    return GPT2_CONFIGS[model_name]
+
+
 def create_rope_cache(seq_len: int, head_dim: int, base: float = 10000.0, dtype=jnp.float32):
     """Create RoPE cache for rotary position embeddings.
     
