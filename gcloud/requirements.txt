@@ -1,0 +1,8 @@
+jax[tpu]
+pandas
+pyarrow
+flax
+optax
+matplotlib
+tiktoken
+huggingface-hub

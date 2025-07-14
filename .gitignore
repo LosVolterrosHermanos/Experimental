@@ -180,7 +180,6 @@ cython_debug/
 *.pkl
 *.png
 *.tar
-*.txt
 timescale-experiment/tanea_tau.ipynb
 dana-nonquadratic-tests/gpt2/fineweb-edu
 timescale-experiment/nohup.out
