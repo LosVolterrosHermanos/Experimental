@@ -171,6 +171,10 @@ def parse_args():
         "--weight_decay", type=float, default=0.01,
         help="Weight decay parameter for AdamW"
     )
+    parser.add_argument(
+        "--data_root", type=str, default="../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT",
+        help="Root directory for training data"
+    )
     # RoPE specific parameters
     parser.add_argument(
         "--rope_base", type=float, default=10000.0,
@@ -328,7 +332,7 @@ def main():
     logger.info(f"Gradient clipping: {config['grad_clip']}")
     
     # Initialize datasets using the new utility function
-    data_root = os.path.expanduser("../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT")
+    data_root = os.path.expanduser(args.data_root)
     if config["disable_validation"]:
         # Only create training dataset - use create_fineweb_datasets but ignore validation
         train_dataset, _ = create_fineweb_datasets(

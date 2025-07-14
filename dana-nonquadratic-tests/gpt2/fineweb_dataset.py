@@ -273,7 +273,7 @@ def create_fineweb_datasets(data_root: str,
     import glob
     
     # Find all parquet files
-    parquet_files = sorted(glob.glob(os.path.join(data_root, "*_00000.parquet")))
+    parquet_files = sorted(glob.glob(os.path.join(data_root, "*.parquet")))
     
     if not parquet_files:
         raise ValueError(f"No parquet files found in {data_root}")

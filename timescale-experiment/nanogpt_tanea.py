@@ -250,6 +250,10 @@ def parse_args():
         help="Timescale of weight decay parameter"
     )
     parser.add_argument(
+        "--data_root", type=str, default="../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT",
+        help="Root directory for training data"
+    )
+    parser.add_argument(
         "--momentum_flavor", type=str, default="effective-clip",
         choices=["effective-clip", "theory", "always-on", "always-on-mk2", "strong-clip", "mk2", "mk3"],
         help="Tanea momentum flavor"
@@ -426,7 +430,7 @@ def main():
     logger.info(f"Tanea params: g2={config['tanea_g2']}, g3={config['tanea_g3']}, delta={config['tanea_delta']}, kappa={config['tanea_kappa']}")
     
     # Initialize datasets using the new utility function
-    data_root = os.path.expanduser("../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT")
+    data_root = os.path.expanduser(args.data_root)
     if config["disable_validation"]:
         # Only create training dataset - use create_fineweb_datasets but ignore validation
         train_dataset, _ = create_fineweb_datasets(
