@@ -68,24 +68,24 @@ def compute_tau_order_statistics(tau_vector):
     if n == 0:
         return np.array([]), np.array([])
     
-    # Sort in descending order for largest stats
-    sorted_tau_desc = np.sort(tau_vector, kind='stable')[::-1]
+    # Sort in ascending order
+    sorted_tau_asc = jnp.sort(tau_vector)
     
     # Compute powers of 1.1 up to n, similar to evaluation times
-    max_k = np.ceil(np.log(n) / np.log(1.1)).astype(np.int32)
-    indices = np.int32(1.1 ** np.arange(max_k + 1)) - 1  # 0-indexed: [0, 0, 1, 2, 3, 4, ...]
+    max_k = jnp.ceil(jnp.log(n) / jnp.log(1.1)).astype(jnp.int32)
+    indices = jnp.int32(1.1 ** jnp.arange(max_k + 1)) - 1  # 0-indexed: [0, 0, 1, 2, 3, 4, ...]
     
     # Remove duplicates and clamp to valid range
-    indices = np.unique(indices)
-    indices = np.minimum(indices, n - 1)
+    indices = jnp.unique(indices)
+    indices = jnp.minimum(indices, n - 1)
     
-    # Get largest order statistics (same as before)
-    largest_order_stats = sorted_tau_desc[indices]
+    # Get smallest order statistics 
+    smallest_order_stats = sorted_tau_asc[indices]
     
-    # Get smallest order statistics using reversed indices
-    # For smallest: indices from the end of the sorted array
+    # Get largest order statistics using reversed indices
+    # For largest: indices from the end of the sorted array
     reversed_indices = (n - 1) - indices
-    smallest_order_stats = sorted_tau_desc[reversed_indices]
+    largest_order_stats = sorted_tau_asc[reversed_indices]
     
     return largest_order_stats, smallest_order_stats
 
@@ -109,7 +109,7 @@ def extract_tau_statistics(opt_state):
     
     # Flatten tau tree into a single vector
     tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
-    tau_vector = np.concatenate([np.ravel(leaf) for leaf in tau_leaves])
+    tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
     
     # Compute order statistics (now returns both largest and smallest)
     order_stats, reversed_order_stats = compute_tau_order_statistics(tau_vector)
