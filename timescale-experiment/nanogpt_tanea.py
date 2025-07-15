@@ -69,7 +69,7 @@ def compute_tau_order_statistics(tau_vector):
         return np.array([]), np.array([])
     
     # Sort in descending order for largest stats
-    sorted_tau_desc = np.sort(tau_vector, kind='timsort')[::-1]
+    sorted_tau_desc = np.sort(tau_vector, kind='stable')[::-1]
     
     # Compute powers of 1.1 up to n, similar to evaluation times
     max_k = np.ceil(np.log(n) / np.log(1.1)).astype(np.int32)
