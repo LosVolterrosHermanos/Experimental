@@ -319,11 +319,18 @@ def main():
     
     # Initialize training dataset
     data_root = os.path.expanduser(args.data_root)
-    train_dataset, _ = create_fineweb_datasets(
-        data_root, 
-        val_max_tokens=None,
-        val_files_count=1
-    )
+    import glob
+    
+    # Find all parquet files for training only
+    parquet_files = sorted(glob.glob(os.path.join(data_root, "*.parquet")))
+    if not parquet_files:
+        raise ValueError(f"No parquet files found in {data_root}")
+    
+    logger.info(f"Found {len(parquet_files)} parquet files in {data_root}")
+    logger.info(f"Using all {len(parquet_files)} files for training (no validation)")
+    
+    # Create training dataset using all files
+    train_dataset = FineWebDataset(parquet_files)
     
     # Create training iterator with full batch size, which JAX will automatically shard across devices
     train_iterator = train_dataset.iterate_once(config["batch_size"], config["seq_len"])
@@ -332,6 +339,7 @@ def main():
     # Training loop
     pbar = tqdm(range(config["train_steps"]), desc="Training")
     start_time = time.time()
+    tokens_processed = 0
     
     # Start profiler if enabled
     if config["enable_profiler"]:
@@ -341,14 +349,24 @@ def main():
 
     try:
         for step in pbar:
+            step_start_time = time.time()
+            
             # Get next batch
             x, y, w = next(train_iterator)
             
             # Forward and backward pass with sharding
             loss, state = train_step_fn(state, x, y)
             
-            # Update progress bar
-            pbar.set_postfix(loss=f"{loss:.4f}")
+            # Calculate tokens processed and timing
+            step_tokens = config["batch_size"] * config["seq_len"]
+            tokens_processed += step_tokens
+            
+            step_end_time = time.time()
+            step_duration = step_end_time - step_start_time
+            tokens_per_sec = step_tokens / step_duration if step_duration > 0 else 0
+            
+            # Update progress bar with loss and tokens/sec
+            pbar.set_postfix(loss=f"{loss:.4f}", tokens_per_sec=f"{tokens_per_sec:.0f}")
     finally:
         # Stop profiler if enabled
         if config["enable_profiler"]:
@@ -356,7 +374,12 @@ def main():
             logger.info(f"Stopped JAX profiler")
 
     end_time = time.time()
-    logger.info(f"Training completed in {end_time - start_time:.2f} seconds")
+    total_duration = end_time - start_time
+    overall_tokens_per_sec = tokens_processed / total_duration if total_duration > 0 else 0
+    
+    logger.info(f"Training completed in {total_duration:.2f} seconds")
+    logger.info(f"Total tokens processed: {tokens_processed:,}")
+    logger.info(f"Overall throughput: {overall_tokens_per_sec:.0f} tokens/sec")
     return None
 
 if __name__ == "__main__":
