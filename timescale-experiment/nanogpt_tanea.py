@@ -23,7 +23,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v2 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -419,7 +419,7 @@ def main():
     model_config = get_model_config(config["model_size"])
     model_config.rope_base = config["rope_base"]
     model_config.attention_implementation = config["attention_implementation"]
-    model = GPTWithRoPE(model_config, mixed_precision=True, init_std=config["init_std"])
+    model = GPTWithRoPE(model_config, init_std=config["init_std"])
     
     # Initialize sharded train state
     shardings, state = _init_train_state_sharded(config, model, key, mesh)
