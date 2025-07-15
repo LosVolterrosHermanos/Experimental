@@ -108,20 +108,9 @@ def extract_tau_statistics(opt_state):
         return {}
     
     # Flatten tau tree into a single vector
-    tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
-    tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
+    tau_stats = jax.tree.map(lambda x: None if x is None else compute_tau_order_statistics(x), tanea_state.tau)
     
-    # Compute order statistics (now returns both largest and smallest)
-    order_stats, reversed_order_stats = compute_tau_order_statistics(tau_vector)
-    
-    return {
-        'tau_order_statistics': order_stats,
-        'tau_reversed_order_statistics': reversed_order_stats,
-        'tau_mean': np.mean(tau_vector),
-        'tau_std': np.std(tau_vector),
-        'tau_min': np.min(tau_vector),
-        'tau_max': np.max(tau_vector)
-    }
+    return tau_stats
 
 def _init_train_state_sharded(config, model, key, mesh):
     """Creates a sharded training state for multi-GPU training."""
@@ -466,24 +455,14 @@ def main():
     # Storage for tau statistics
     tau_statistics = {
         'timestamps': [],
-        'tau_order_statistics': [],
-        'tau_reversed_order_statistics': [],
-        'tau_mean': [],
-        'tau_std': [],
-        'tau_min': [],
-        'tau_max': []
+        'tau_statistics': []
     }
     
     # Initial tau statistics
     initial_tau_stats = extract_tau_statistics(state.opt_state)
     if initial_tau_stats:
         tau_statistics['timestamps'].append(0)
-        tau_statistics['tau_order_statistics'].append(initial_tau_stats['tau_order_statistics'])
-        tau_statistics['tau_reversed_order_statistics'].append(initial_tau_stats['tau_reversed_order_statistics'])
-        tau_statistics['tau_mean'].append(initial_tau_stats['tau_mean'])
-        tau_statistics['tau_std'].append(initial_tau_stats['tau_std'])
-        tau_statistics['tau_min'].append(initial_tau_stats['tau_min'])
-        tau_statistics['tau_max'].append(initial_tau_stats['tau_max'])
+        tau_statistics['tau_statistics'].append(initial_tau_stats)
     
     # Training loop with loss logging
     pbar = tqdm(range(config["train_steps"]), desc="Training")
@@ -518,12 +497,7 @@ def main():
             tau_stats = extract_tau_statistics(state.opt_state)
             if tau_stats:
                 tau_statistics['timestamps'].append(step)
-                tau_statistics['tau_order_statistics'].append(tau_stats['tau_order_statistics'])
-                tau_statistics['tau_reversed_order_statistics'].append(tau_stats['tau_reversed_order_statistics'])
-                tau_statistics['tau_mean'].append(tau_stats['tau_mean'])
-                tau_statistics['tau_std'].append(tau_stats['tau_std'])
-                tau_statistics['tau_min'].append(tau_stats['tau_min'])
-                tau_statistics['tau_max'].append(tau_stats['tau_max'])
+                tau_statistics['tau_statistics'].append(tau_stats)
             
             # Print detailed metrics
             elapsed = time.time() - start_time
@@ -537,8 +511,6 @@ def main():
             logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             logger.info(f"  Multi-GPU throughput: {average_tokens_per_second/jax.device_count():.1f} tokens/s per device")
-            if tau_stats:
-                logger.info(f"  Tau Mean: {tau_stats['tau_mean']:.6f}, Tau Max: {tau_stats['tau_max']:.6f}")
             logger.info(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
@@ -548,11 +520,6 @@ def main():
             else:
                 logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
-    
-    # Convert tau statistics lists to arrays
-    for key in tau_statistics:
-        if key not in ['tau_order_statistics', 'tau_reversed_order_statistics']:
-            tau_statistics[key] = jnp.array(tau_statistics[key])
     
     # Save results
     results_data = {
