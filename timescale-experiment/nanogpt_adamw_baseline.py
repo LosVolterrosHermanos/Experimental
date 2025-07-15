@@ -23,7 +23,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v2 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
