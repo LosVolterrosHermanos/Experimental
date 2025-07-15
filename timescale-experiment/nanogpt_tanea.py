@@ -40,6 +40,7 @@ from flax.training.train_state import TrainState
 from flax import linen as nn
 
 LOG_STEPS_BASE = 1.01
+TAU_ORDER_STATS_BASE = 2.0
 INIT_STD = 0.02
 
 # Set up logging
@@ -409,6 +410,12 @@ def main():
         jnp.int32(LOG_STEPS_BASE**jnp.arange(1, jnp.ceil(jnp.log(config["train_steps"])/jnp.log(LOG_STEPS_BASE)))),
         jnp.array([config["train_steps"]])
     ]))
+
+    TAU_ORDER_STATS_STEPS = jnp.unique(jnp.concatenate([
+        jnp.array([0]),
+        jnp.int32(TAU_ORDER_STATS_BASE**jnp.arange(1, jnp.ceil(jnp.log(config["train_steps"])/jnp.log(TAU_ORDER_STATS_BASE)))),
+        jnp.array([config["train_steps"]])
+    ]))
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -500,12 +507,6 @@ def main():
             metrics_history['tokens_processed'].append(total_tokens)
             metrics_history['time_elapsed'].append(time.time() - start_time)
             
-            # Collect tau statistics
-            tau_stats = extract_tau_statistics(state.opt_state)
-            if tau_stats:
-                tau_statistics['timestamps'].append(step)
-                tau_statistics['tau_statistics'].append(tau_stats)
-            
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
@@ -527,6 +528,12 @@ def main():
             else:
                 logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
+        
+        if step in TAU_ORDER_STATS_STEPS:
+            tau_stats = extract_tau_statistics(state.opt_state)
+            if tau_stats:
+                tau_statistics['timestamps'].append(step)
+                tau_statistics['tau_statistics'].append(tau_stats)
     
     # Save results
     results_data = {
