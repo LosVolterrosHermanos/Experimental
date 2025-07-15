@@ -112,7 +112,7 @@ def extract_tau_statistics(opt_state):
         if x is None:
             return None
         else:
-            u,v = compute_tau_order_statistics(x)
+            u,v = compute_tau_order_statistics(jnp.ravel(x))
             return np.array(u), np.array(v)
 
     # Flatten tau tree into a single vector
