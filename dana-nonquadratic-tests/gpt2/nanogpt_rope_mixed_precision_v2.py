@@ -336,7 +336,7 @@ class TransformerBlock(nn.Module):
     config: ModelConfig
     init_std: float = 0.02
 
-    @nn.checkpoint  # Add gradient checkpointing to save memory
+    #@nn.checkpoint  # Add gradient checkpointing to save memory
     @nn.compact
     def __call__(self, x):
         # LayerNorm needs float32 for numerical stability
