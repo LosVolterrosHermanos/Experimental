@@ -347,6 +347,8 @@ def main():
         jax.profiler.start_trace(config["profiler_dir"])
         logger.info(f"Started JAX profiler, saving to {config['profiler_dir']}")
 
+    step_tokens = config["batch_size"] * config["seq_len"]  # Tokens per iteration
+    
     try:
         for step in pbar:
             # Get next batch
@@ -355,16 +357,18 @@ def main():
             # Forward and backward pass with sharding
             loss, state = train_step_fn(state, x, y)
             
-            # Calculate tokens processed and average throughput
-            step_tokens = config["batch_size"] * config["seq_len"]
+            # Calculate tokens processed
             tokens_processed += step_tokens
             
-            # Calculate average tokens/sec from start of training
-            elapsed_time = time.time() - start_time
-            avg_tokens_per_sec = tokens_processed / elapsed_time if elapsed_time > 0 else 0
+            # Get iteration rate from tqdm and convert to tokens/sec
+            if hasattr(pbar, 'format_dict') and pbar.format_dict.get('rate'):
+                iterations_per_sec = pbar.format_dict['rate']
+                tokens_per_sec = iterations_per_sec * step_tokens
+            else:
+                tokens_per_sec = 0
             
-            # Update progress bar with loss and average tokens/sec
-            pbar.set_postfix(loss=f"{loss:.4f}", tokens_per_sec=f"{avg_tokens_per_sec:.0f}")
+            # Update progress bar with loss and tokens/sec
+            pbar.set_postfix(loss=f"{loss:.4f}", **{"tokens/s": f"{tokens_per_sec:,.0f}"})
     finally:
         # Stop profiler if enabled
         if config["enable_profiler"]:
