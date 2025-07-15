@@ -349,24 +349,22 @@ def main():
 
     try:
         for step in pbar:
-            step_start_time = time.time()
-            
             # Get next batch
             x, y, w = next(train_iterator)
             
             # Forward and backward pass with sharding
             loss, state = train_step_fn(state, x, y)
             
-            # Calculate tokens processed and timing
+            # Calculate tokens processed and average throughput
             step_tokens = config["batch_size"] * config["seq_len"]
             tokens_processed += step_tokens
             
-            step_end_time = time.time()
-            step_duration = step_end_time - step_start_time
-            tokens_per_sec = step_tokens / step_duration if step_duration > 0 else 0
+            # Calculate average tokens/sec from start of training
+            elapsed_time = time.time() - start_time
+            avg_tokens_per_sec = tokens_processed / elapsed_time if elapsed_time > 0 else 0
             
-            # Update progress bar with loss and tokens/sec
-            pbar.set_postfix(loss=f"{loss:.4f}", tokens_per_sec=f"{tokens_per_sec:.0f}")
+            # Update progress bar with loss and average tokens/sec
+            pbar.set_postfix(loss=f"{loss:.4f}", tokens_per_sec=f"{avg_tokens_per_sec:.0f}")
     finally:
         # Stop profiler if enabled
         if config["enable_profiler"]:
