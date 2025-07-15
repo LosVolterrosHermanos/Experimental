@@ -368,7 +368,7 @@ def main():
                 tokens_per_sec = 0
             
             # Update progress bar with loss and tokens/sec
-            pbar.set_postfix(loss=f"{loss:.4f}", **{"tokens/s": f"{tokens_per_sec:,.0f}"})
+            pbar.set_postfix(loss=f"{loss:.4f}", **{"token/s": f"{tokens_per_sec:,.0f}"})
     finally:
         # Stop profiler if enabled
         if config["enable_profiler"]:
