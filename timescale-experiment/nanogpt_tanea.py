@@ -66,18 +66,18 @@ def compute_tau_order_statistics(tau_vector):
     """
     n = len(tau_vector)
     if n == 0:
-        return jnp.array([]), jnp.array([])
+        return np.array([]), np.array([])
     
     # Sort in descending order for largest stats
-    sorted_tau_desc = jnp.sort(tau_vector)[::-1]
+    sorted_tau_desc = np.sort(tau_vector)[::-1]
     
     # Compute powers of 1.1 up to n, similar to evaluation times
-    max_k = jnp.ceil(jnp.log(n) / jnp.log(1.1)).astype(jnp.int32)
-    indices = jnp.int32(1.1 ** jnp.arange(max_k + 1)) - 1  # 0-indexed: [0, 0, 1, 2, 3, 4, ...]
+    max_k = np.ceil(np.log(n) / np.log(1.1)).astype(np.int32)
+    indices = np.int32(1.1 ** np.arange(max_k + 1)) - 1  # 0-indexed: [0, 0, 1, 2, 3, 4, ...]
     
     # Remove duplicates and clamp to valid range
-    indices = jnp.unique(indices)
-    indices = jnp.minimum(indices, n - 1)
+    indices = np.unique(indices)
+    indices = np.minimum(indices, n - 1)
     
     # Get largest order statistics (same as before)
     largest_order_stats = sorted_tau_desc[indices]
@@ -109,7 +109,7 @@ def extract_tau_statistics(opt_state):
     
     # Flatten tau tree into a single vector
     tau_leaves = jax.tree_util.tree_leaves(tanea_state.tau)
-    tau_vector = jnp.concatenate([jnp.ravel(leaf) for leaf in tau_leaves])
+    tau_vector = np.concatenate([np.ravel(leaf) for leaf in tau_leaves])
     
     # Compute order statistics (now returns both largest and smallest)
     order_stats, reversed_order_stats = compute_tau_order_statistics(tau_vector)
@@ -117,10 +117,10 @@ def extract_tau_statistics(opt_state):
     return {
         'tau_order_statistics': order_stats,
         'tau_reversed_order_statistics': reversed_order_stats,
-        'tau_mean': jnp.mean(tau_vector),
-        'tau_std': jnp.std(tau_vector),
-        'tau_min': jnp.min(tau_vector),
-        'tau_max': jnp.max(tau_vector)
+        'tau_mean': np.mean(tau_vector),
+        'tau_std': np.std(tau_vector),
+        'tau_min': np.min(tau_vector),
+        'tau_max': np.max(tau_vector)
     }
 
 def _init_train_state_sharded(config, model, key, mesh):
