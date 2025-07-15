@@ -107,8 +107,15 @@ def extract_tau_statistics(opt_state):
     if not isinstance(tanea_state, TaneaOptimizerState):
         return {}
     
+    def compute_tau_order_stats_wrapper(x):
+        if x is None:
+            return None
+        else:
+            u,v = compute_tau_order_statistics(x)
+            return np.array(u), np.array(v)
+
     # Flatten tau tree into a single vector
-    tau_stats = jax.tree.map(lambda x: None if x is None else compute_tau_order_statistics(x), tanea_state.tau)
+    tau_stats = jax.tree.map(compute_tau_order_stats_wrapper, tanea_state.tau)
     
     return tau_stats
 
