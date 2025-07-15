@@ -493,15 +493,15 @@ def main():
         pbar.set_postfix(loss=f"{loss:.4f}")
         
         # Log metrics at specified steps
-        if step in LOG_STEPS:
+        if (step+1) in LOG_STEPS:
             # Evaluate validation loss (if enabled)
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
                 val_loss = evaluate_validation_loss(state, val_dataset, config, train_step_fn, config["val_steps"])
             
-            total_tokens = step * config["batch_size"] * config["seq_len"]
-            metrics_history['step'].append(step)
+            total_tokens = (step+1) * config["batch_size"] * config["seq_len"]
+            metrics_history['step'].append(step+1)
             metrics_history['train_loss'].append(float(loss))
             metrics_history['val_loss'].append(float(val_loss))
             metrics_history['tokens_processed'].append(total_tokens)
@@ -510,7 +510,7 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
-            logger.info(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
+            logger.info(f"\nStep: {step+1}/{config['train_steps']} ({100.0 * (step+1) / config['train_steps']:.1f}%)")
             logger.info(f"  Train Loss: {loss:.6f}")
             if config["disable_validation"]:
                 logger.info(f"  Val Loss: disabled")
@@ -529,10 +529,10 @@ def main():
                 logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
         
-        if step in TAU_ORDER_STATS_STEPS:
+        if (step+1) in TAU_ORDER_STATS_STEPS:
             tau_stats = extract_tau_statistics(state.opt_state)
             if tau_stats:
-                tau_statistics['timestamps'].append(step)
+                tau_statistics['timestamps'].append(step+1)
                 tau_statistics['tau_statistics'].append(tau_stats)
     
     # Save results
