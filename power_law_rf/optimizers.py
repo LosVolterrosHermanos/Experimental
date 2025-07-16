@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Callable
+from typing import NamedTuple, Optional, Callable, Union, Any
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +9,7 @@ from optax import tree_utils as otu
 from optax._src import base
 from optax._src import numerics
 from optax._src import utils
-
+from optax.transforms import WeightDecaySchedule
 
 def powerlaw_schedule(
     init_value: chex.Scalar,
@@ -509,3 +509,49 @@ def adamw_optimizer_withtau(
         return updates, AdamWOptimizerState_withtau(count=count_inc, m=new_m, v=new_v, tau=new_tau, vtau=new_vtau)
 
     return base.GradientTransformation(init_fn, update_fn)
+
+
+# class WeightDecaySchedule(NamedTuple):
+#   """Maintains count for weight decay scheduling."""
+#   count: chex.Array  # shape=(), dtype=jnp.int32
+
+
+def subtract_decayed_weight_sparsifier(
+    weight_decay: Union[float, jax.Array, base.ScalarOrSchedule] = 0.0,
+    #mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
+) -> base.GradientTransformation:
+  """Add parameter scaled by `weight_decay`.
+
+  Args:
+    weight_decay: A scalar weight decay rate.
+    mask: A tree with same structure as (or a prefix of) the params PyTree, or a
+      Callable that returns such a pytree given the params/updates. The leaves
+      should be booleans, `True` for leaves/subtrees you want to apply the
+      transformation to, and `False` for those you want to skip.
+
+  Returns:
+    A :class:`optax.GradientTransformation` object.
+  """
+
+
+  def init_fn(params):
+    del params
+    if callable(weight_decay):
+      return WeightDecaySchedule(count=jnp.zeros([], jnp.int32))
+    else:
+      return base.EmptyState()
+
+
+  def update_fn(updates, state, params):
+    if params is None:
+      raise ValueError(base.NO_PARAMS_MSG)
+    s = weight_decay(state.count) if callable(weight_decay) else weight_decay
+    updates = jax.tree.map(
+        lambda g, p: None if g is None else g - s * jnp.sign(p),
+        updates,
+        params,
+        is_leaf=lambda x: x is None,
+    )
+    return updates, state
+
+  return base.GradientTransformation(init_fn, update_fn)

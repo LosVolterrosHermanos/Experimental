@@ -322,7 +322,7 @@ def main():
     model_config = get_model_config(config["model_size"])
     model_config.rope_base = config["rope_base"]
     model_config.attention_implementation = config["attention_implementation"]
-    model = GPTWithRoPE(model_config, mixed_precision=True, init_std=config["init_std"])
+    model = GPTWithRoPE(model_config, init_std=config["init_std"])
     
     # Initialize sharded train state
     shardings, state = _init_train_state_sharded(config, model, key, mesh)
