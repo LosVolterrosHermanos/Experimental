@@ -9,7 +9,7 @@ from optax import tree_utils as otu
 from optax._src import base
 from optax._src import numerics
 from optax._src import utils
-from optax.transforms import WeightDecaySchedule
+from optax.transforms._adding import WeightDecaySchedule
 
 def powerlaw_schedule(
     init_value: chex.Scalar,
