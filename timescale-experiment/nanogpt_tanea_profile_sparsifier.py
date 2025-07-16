@@ -62,7 +62,7 @@ def _init_train_state_sharded(config, model, key, mesh):
         g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
         g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
         delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
-        tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=0.0, momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
+        tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=None, momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
 
         wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
         sparsifier = subtract_decayed_weight_sparsifier(wdscheduler)
