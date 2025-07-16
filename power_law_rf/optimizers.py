@@ -9,7 +9,6 @@ from optax import tree_utils as otu
 from optax._src import base
 from optax._src import numerics
 from optax._src import utils
-from optax.transforms._adding import WeightDecaySchedule
 
 def powerlaw_schedule(
     init_value: chex.Scalar,
@@ -511,9 +510,9 @@ def adamw_optimizer_withtau(
     return base.GradientTransformation(init_fn, update_fn)
 
 
-# class WeightDecaySchedule(NamedTuple):
-#   """Maintains count for weight decay scheduling."""
-#   count: chex.Array  # shape=(), dtype=jnp.int32
+class SparsifierState(NamedTuple):
+    """Maintains count for weight decay scheduling."""
+    count: chex.Array  # shape=(), dtype=jnp.int32
 
 
 def subtract_decayed_weight_sparsifier(
@@ -537,7 +536,7 @@ def subtract_decayed_weight_sparsifier(
   def init_fn(params):
     del params
     if callable(weight_decay):
-      return WeightDecaySchedule(count=jnp.zeros([], jnp.int32))
+      return SparsifierState(count=jnp.zeros([], jnp.int32))
     else:
       return base.EmptyState()
 
