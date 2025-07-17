@@ -501,6 +501,7 @@ def main():
         
         # Log metrics at specified steps
         if (step+1) in LOG_STEPS:
+            jax.block_until_ready(loss)
             # Evaluate validation loss (if enabled)
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
