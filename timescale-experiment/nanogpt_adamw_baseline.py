@@ -23,7 +23,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v2 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -75,7 +75,8 @@ def _init_train_state_sharded(config, model, key, mesh):
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"]
+                    weight_decay=config["weight_decay"],
+                    dtype=jnp.bfloat16
                 ),
                 optax.scale_by_schedule(wsd_schedule)
             )
@@ -86,7 +87,8 @@ def _init_train_state_sharded(config, model, key, mesh):
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"]
+                    weight_decay=config["weight_decay"],
+                    dtype=jnp.bfloat16
                 )
             )
         
@@ -368,6 +370,7 @@ def main():
     # Training loop with loss logging
     pbar = tqdm(range(config["train_steps"]), desc="Training")
     start_time = time.time()
+    losses = []
     
     for step in pbar:
         # Get next batch
@@ -375,9 +378,12 @@ def main():
         
         # Forward and backward pass with sharding
         loss, state = train_step_fn(state, x, y)
-        
+        losses.append(loss)
         # Update progress bar
-        pbar.set_postfix(loss=f"{loss:.4f}")
+        if step % 10 == 0:
+            avg_loss = np.mean(np.array(losses))
+            losses = []
+            pbar.set_postfix(loss=f"{avg_loss:.4f}")
         
         # Log metrics at specified steps
         if step in LOG_STEPS:
