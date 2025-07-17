@@ -76,7 +76,7 @@ def _init_train_state_sharded(config, model, key, mesh):
                     b1=config["beta1"],
                     b2=config["beta2"],
                     weight_decay=config["weight_decay"],
-                    y_dtype=jnp.bfloat16
+                    mu_dtype=jnp.bfloat16
                 ),
                 optax.scale_by_schedule(wsd_schedule)
             )
@@ -88,7 +88,7 @@ def _init_train_state_sharded(config, model, key, mesh):
                     b1=config["beta1"],
                     b2=config["beta2"],
                     weight_decay=config["weight_decay"],
-                    y_dtype=jnp.bfloat16
+                    mu_dtype=jnp.bfloat16
                 )
             )
         
