@@ -118,6 +118,18 @@ def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: 
     new_state = state.apply_gradients(grads=grads)
     return loss, new_state
 
+def eval_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: Mesh):
+    """Sharded evaluation step for multi-GPU data parallelism (no gradient computation)."""
+    # Add sharding constraints for input data
+    x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P("data")))
+    y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P("data")))
+    
+    # Forward pass only - no gradients
+    logits = state.apply_fn(state.params, x, False)
+    # Loss computation in float32 for numerical stability
+    loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
+    return loss
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train nanogpt with AdamW optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs")
     parser.add_argument(
@@ -218,7 +230,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-def evaluate_validation_loss(state, val_dataset, config, train_step_fn, val_steps=20):
+def evaluate_validation_loss(state, val_dataset, config, eval_step_fn, val_steps=20):
     """Evaluate validation loss with multi-GPU support"""
     total_loss = 0.0
     steps_taken = 0
@@ -230,7 +242,7 @@ def evaluate_validation_loss(state, val_dataset, config, train_step_fn, val_step
         if steps_taken >= val_steps:
             break
             
-        loss, _ = train_step_fn(state, x, y)  # Don't update state for validation
+        loss = eval_step_fn(state, x, y)  # Forward pass only for validation
         total_loss += loss
         steps_taken += 1
     
@@ -270,6 +282,8 @@ def main():
     
     # Create JIT-compiled train step function with mesh frozen
     train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))
+    # Create JIT-compiled eval step function with mesh frozen
+    eval_step_fn = jax.jit(functools.partial(eval_step_sharded, mesh=mesh))
     
     # Override INIT_STD if provided
     global INIT_STD
@@ -391,7 +405,7 @@ def main():
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
-                val_loss = evaluate_validation_loss(state, val_dataset, config, train_step_fn, config["val_steps"])
+                val_loss = evaluate_validation_loss(state, val_dataset, config, eval_step_fn, config["val_steps"])
             
             total_tokens = step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(step)
