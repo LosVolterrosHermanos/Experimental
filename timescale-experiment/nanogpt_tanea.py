@@ -133,8 +133,8 @@ def _init_train_state_sharded(config, model, key, mesh):
         delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
         wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
         tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, 
-                                momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"],
-                                y_dtype=jnp.bfloat16)
+                                momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
+                                #y_dtype=jnp.bfloat16)
                                 #y_dtype=jnp.float32)
 
         # Create optimizer chain with optional WSD schedule
