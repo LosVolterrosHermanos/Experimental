@@ -19,6 +19,15 @@ import functools
 from typing import Dict, List, Any
 from tqdm import tqdm
 
+#recommended flags for faster training
+os.environ['XLA_FLAGS'] = (
+    '--xla_gpu_enable_triton_softmax_fusion=true '
+    '--xla_gpu_triton_gemm_any=True '
+    '--xla_gpu_enable_async_collectives=true '
+    '--xla_gpu_enable_latency_hiding_scheduler=true '
+    '--xla_gpu_enable_highest_priority_async_stream=true '
+)
+
 # Import from the gpt2 directory
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
@@ -75,8 +84,7 @@ def _init_train_state_sharded(config, model, key, mesh):
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"],
-                    mu_dtype=jnp.bfloat16
+                    weight_decay=config["weight_decay"]
                 ),
                 optax.scale_by_schedule(wsd_schedule)
             )
@@ -87,8 +95,7 @@ def _init_train_state_sharded(config, model, key, mesh):
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"],
-                    mu_dtype=jnp.bfloat16
+                    weight_decay=config["weight_decay"]
                 )
             )
         
