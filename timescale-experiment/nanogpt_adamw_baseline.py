@@ -32,7 +32,7 @@ os.environ['XLA_FLAGS'] = (
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v4 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
