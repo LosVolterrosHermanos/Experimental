@@ -511,11 +511,11 @@ def main():
     
     for step in pbar:
         # Get next batch
-        x, y, w = next(train_iterator)
-        
-        # Forward and backward pass with sharding
-        loss, state = train_step_fn(state, x, y)
-        losses.append(loss)
+        for _ in range(100):
+            x, y, w = next(train_iterator)
+            # Forward and backward pass with sharding
+            loss, state = train_step_fn(state, x, y)
+            losses.append(loss)
         # Update progress bar
         if step % 10 == 0:
             avg_loss = np.mean(np.array(losses))
