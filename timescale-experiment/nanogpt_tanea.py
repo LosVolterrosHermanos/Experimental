@@ -20,19 +20,19 @@ from typing import Dict, List, Any
 from tqdm import tqdm
 
 #recommended flags for faster training
-os.environ['XLA_FLAGS'] = (
-    '--xla_gpu_enable_triton_softmax_fusion=true '
-    '--xla_gpu_triton_gemm_any=True '
-    '--xla_gpu_enable_async_collectives=true '
-    '--xla_gpu_enable_latency_hiding_scheduler=true '
-    '--xla_gpu_enable_highest_priority_async_stream=true '
-)
+# os.environ['XLA_FLAGS'] = (
+#     '--xla_gpu_enable_triton_softmax_fusion=true '
+#     '--xla_gpu_triton_gemm_any=True '
+#     '--xla_gpu_enable_async_collectives=true '
+#     '--xla_gpu_enable_latency_hiding_scheduler=true '
+#     '--xla_gpu_enable_highest_priority_async_stream=true '
+# )
 
 # Import from the gpt2 directory
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v4 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -99,6 +99,7 @@ def compute_tau_order_statistics(tau_vector):
     
     return largest_order_stats, smallest_order_stats
 
+@jax.jit
 def extract_tau_statistics(opt_state):
     """Extract tau statistics from TaneaOptimizerState.
     
@@ -142,9 +143,8 @@ def _init_train_state_sharded(config, model, key, mesh):
         delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
         wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
         tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, 
-                                momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
-                                #y_dtype=jnp.bfloat16)
-                                #y_dtype=jnp.float32)
+                                momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"],
+                                y_dtype=jnp.float32)
 
         # Create optimizer chain with optional WSD schedule
         if config["enable_wsd"]:
