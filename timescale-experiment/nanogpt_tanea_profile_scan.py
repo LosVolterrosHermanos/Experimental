@@ -116,21 +116,29 @@ def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: 
     new_state = state.apply_gradients(grads=grads)
     return loss, new_state
 
-@jax.jit
-def train_block(state, data_batch, mesh):
-    """Train for multiple steps using jax.lax.scan without host-side control flow."""
-    def train_step_scan(carry_state, batch_data):
-        x, y, w = batch_data
-        loss, new_state = train_step_sharded(carry_state, x, y, mesh)
-        return new_state, loss
+def create_train_block_fn(mesh):
+    """Create a JIT-compiled train block function with mesh frozen."""
     
-    # Run scan over the data batch
-    final_state, losses = jax.lax.scan(
-        train_step_scan,
-        state,
-        data_batch  # Shape: (scan_batch_size, batch_size, seq_len)
-    )
-    return final_state, losses
+    # Create the train step function with mesh frozen
+    train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))
+    
+    @jax.jit
+    def train_block(state, data_batch):
+        """Train for multiple steps using jax.lax.scan without host-side control flow."""
+        def train_step_scan(carry_state, batch_data):
+            x, y, w = batch_data
+            loss, new_state = train_step_fn(carry_state, x, y)
+            return new_state, loss
+        
+        # Run scan over the data batch
+        final_state, losses = jax.lax.scan(
+            train_step_scan,
+            state,
+            data_batch  # Shape: (scan_batch_size, batch_size, seq_len)
+        )
+        return final_state, losses
+    
+    return train_block
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train nanogpt with Tanea optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs with scan optimization")
@@ -272,7 +280,7 @@ def main():
     logger.info(f"Created device mesh: {mesh}")
     
     # Create JIT-compiled train block function with mesh frozen
-    train_block_fn = functools.partial(train_block, mesh=mesh)
+    train_block_fn = create_train_block_fn(mesh)
     
     # Override INIT_STD if provided
     global INIT_STD
