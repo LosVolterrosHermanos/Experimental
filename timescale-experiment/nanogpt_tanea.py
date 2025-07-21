@@ -100,7 +100,6 @@ def compute_tau_order_statistics(tau_vector):
     
     return largest_order_stats, smallest_order_stats
 
-@jax.jit
 def extract_tau_statistics(opt_state):
     """Extract tau statistics from TaneaOptimizerState.
     
