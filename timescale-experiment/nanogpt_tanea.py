@@ -51,6 +51,7 @@ from flax import linen as nn
 LOG_STEPS_BASE = 1.01
 TAU_ORDER_STATS_BASE = 2.0
 INIT_STD = 0.02
+SCAN_BLOCK_SIZE = 10
 
 # Set up logging
 logging.basicConfig(
@@ -206,6 +207,30 @@ def eval_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: M
     # Loss computation in float32
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
     return loss
+
+def create_train_block_fn(mesh):
+    """Create a JIT-compiled train block function with mesh frozen."""
+    
+    # Create the train step function with mesh frozen
+    train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))
+    
+    @jax.jit
+    def train_block(state, data_batch):
+        """Train for multiple steps using jax.lax.scan without host-side control flow."""
+        def train_step_scan(carry_state, batch_data):
+            x, y, w = batch_data
+            loss, new_state = train_step_fn(carry_state, x, y)
+            return new_state, loss
+        
+        # Run scan over the data batch
+        final_state, losses = jax.lax.scan(
+            train_step_scan,
+            state,
+            data_batch  # Shape: (scan_batch_size, batch_size, seq_len)
+        )
+        return final_state, losses
+    
+    return train_block
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train nanogpt with Tanea optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs")
@@ -430,18 +455,26 @@ def main():
         "num_devices": jax.device_count()
     }
     
-    # Create LOG_STEPS
-    LOG_STEPS = jnp.unique(jnp.concatenate([
+    # Calculate number of blocks and create block-based logging steps
+    total_blocks = (config["train_steps"] + SCAN_BLOCK_SIZE - 1) // SCAN_BLOCK_SIZE
+    
+    # Create LOG_STEPS based on blocks (then convert back to step numbers)
+    LOG_BLOCKS = jnp.unique(jnp.concatenate([
         jnp.array([0]),
-        jnp.int32(LOG_STEPS_BASE**jnp.arange(1, jnp.ceil(jnp.log(config["train_steps"])/jnp.log(LOG_STEPS_BASE)))),
-        jnp.array([config["train_steps"]])
+        jnp.int32(LOG_STEPS_BASE**jnp.arange(1, jnp.ceil(jnp.log(total_blocks)/jnp.log(LOG_STEPS_BASE)))),
+        jnp.array([total_blocks])
     ]))
+    # Convert block numbers to step numbers (end of each block)
+    LOG_STEPS = jnp.minimum(LOG_BLOCKS * SCAN_BLOCK_SIZE, config["train_steps"])
 
-    TAU_ORDER_STATS_STEPS = jnp.unique(jnp.concatenate([
+    # Create TAU_ORDER_STATS_STEPS based on blocks
+    TAU_ORDER_STATS_BLOCKS = jnp.unique(jnp.concatenate([
         jnp.array([0]),
-        jnp.int32(TAU_ORDER_STATS_BASE**jnp.arange(1, jnp.ceil(jnp.log(config["train_steps"])/jnp.log(TAU_ORDER_STATS_BASE)))),
-        jnp.array([config["train_steps"]])
+        jnp.int32(TAU_ORDER_STATS_BASE**jnp.arange(1, jnp.ceil(jnp.log(total_blocks)/jnp.log(TAU_ORDER_STATS_BASE)))),
+        jnp.array([total_blocks])
     ]))
+    # Convert block numbers to step numbers (end of each block) 
+    TAU_ORDER_STATS_STEPS = jnp.minimum(TAU_ORDER_STATS_BLOCKS * SCAN_BLOCK_SIZE, config["train_steps"])
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -453,6 +486,9 @@ def main():
     # Initialize sharded train state
     shardings, state = _init_train_state_sharded(config, model, key, mesh)
     num_params = count_params(state.params)
+    
+    # Create JIT-compiled train block function with mesh frozen
+    train_block_fn = create_train_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
@@ -504,36 +540,52 @@ def main():
         tau_statistics['timestamps'].append(0)
         tau_statistics['tau_statistics'].append(initial_tau_stats)
     
-    # Training loop with loss logging
-    pbar = tqdm(range(config["train_steps"]), desc="Training")
+    # Training loop with scan blocks
+    pbar = tqdm(range(total_blocks), desc="Training Blocks")
     start_time = time.time()
-    losses = []
+    current_step = 0
     
-    for step in pbar:
-        # Get next batch
-        for _ in range(100):
-            x, y, w = next(train_iterator)
-            # Forward and backward pass with sharding
-            loss, state = train_step_fn(state, x, y)
-            losses.append(loss)
-        # Update progress bar
-        if step % 10 == 0:
-            avg_loss = np.mean(np.array(losses))
-            losses = []
-            pbar.set_postfix(loss=f"{avg_loss:.4f}")
+    for block_idx in pbar:
+        # Calculate how many steps to process in this block
+        remaining_steps = config["train_steps"] - current_step
+        block_size = min(SCAN_BLOCK_SIZE, remaining_steps)
         
-        # Log metrics at specified steps
-        if (step+1) in LOG_STEPS:
-            jax.block_until_ready(loss)
+        if block_size <= 0:
+            break
+        
+        # Collect data for the entire block
+        block_data = []
+        for _ in range(block_size):
+            x, y, w = next(train_iterator)
+            block_data.append((x, y, w))
+        
+        # Stack the data into arrays for scan
+        # Shape: (block_size, batch_size, seq_len)
+        block_x = jnp.stack([item[0] for item in block_data])
+        block_y = jnp.stack([item[1] for item in block_data])
+        block_w = jnp.stack([item[2] for item in block_data])
+        data_batch = (block_x, block_y, block_w)
+        
+        # Run the scan block
+        state, block_losses = train_block_fn(state, data_batch)
+        
+        # Calculate average loss for this block and update progress bar
+        avg_block_loss = jnp.mean(block_losses)
+        current_step += block_size
+        pbar.set_postfix(loss=f"{avg_block_loss:.4f}", step=f"{current_step}/{config['train_steps']}")
+        
+        # Log metrics at specified steps (check at end of each block)
+        if current_step in LOG_STEPS:
+            jax.block_until_ready(avg_block_loss)
             # Evaluate validation loss (if enabled)
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
                 val_loss = evaluate_validation_loss(state, val_dataset, config, eval_step_fn, config["val_steps"])
             
-            total_tokens = (step+1) * config["batch_size"] * config["seq_len"]
-            metrics_history['step'].append(step+1)
-            metrics_history['train_loss'].append(float(loss))
+            total_tokens = current_step * config["batch_size"] * config["seq_len"]
+            metrics_history['step'].append(current_step)
+            metrics_history['train_loss'].append(float(avg_block_loss))
             metrics_history['val_loss'].append(float(val_loss))
             metrics_history['tokens_processed'].append(total_tokens)
             metrics_history['time_elapsed'].append(time.time() - start_time)
@@ -541,8 +593,8 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
-            logger.info(f"\nStep: {step+1}/{config['train_steps']} ({100.0 * (step+1) / config['train_steps']:.1f}%)")
-            logger.info(f"  Train Loss: {loss:.6f}")
+            logger.info(f"\nStep: {current_step}/{config['train_steps']} ({100.0 * current_step / config['train_steps']:.1f}%)")
+            logger.info(f"  Train Loss: {avg_block_loss:.6f}")
             if config["disable_validation"]:
                 logger.info(f"  Val Loss: disabled")
             else:
@@ -560,10 +612,10 @@ def main():
                 logger.info(f"  WSD Schedule: disabled")
             logger.info(f"  Precision: mixed bfloat16 + RoPE, {jax.device_count()}-GPU data parallel\n")
         
-        if (step+1) in TAU_ORDER_STATS_STEPS:
+        if current_step in TAU_ORDER_STATS_STEPS:
             tau_stats = extract_tau_statistics(state.opt_state)
             if tau_stats:
-                tau_statistics['timestamps'].append(step+1)
+                tau_statistics['timestamps'].append(current_step)
                 tau_statistics['tau_statistics'].append(tau_stats)
     
     # Save results

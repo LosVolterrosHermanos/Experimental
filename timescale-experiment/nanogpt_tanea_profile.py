@@ -20,7 +20,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v2 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -63,7 +63,9 @@ def _init_train_state_sharded(config, model, key, mesh):
         g3 = powerlaw_schedule(config["tanea_g3"], 0.0, -1.0*config["tanea_kappa"], 1)
         delta = powerlaw_schedule(1.0, 0.0, -1.0, config["tanea_delta"])
         wdscheduler = powerlaw_schedule(1.0*config["weight_decay"], 0.0, -1.0*config["power_weight_decay"], config["weight_decay_ts"])
-        tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"])
+        tanea = tanea_optimizer(g2=g2, g3=g3, Delta=delta, wd=wdscheduler, 
+                                momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"],
+                                y_dtype=jnp.float32)
 
         # Create optimizer chain with optional WSD schedule
         if config["enable_wsd"]:
