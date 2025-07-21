@@ -543,6 +543,7 @@ def main():
     pbar = tqdm(range(total_blocks), desc="Training Blocks")
     start_time = time.time()
     current_step = 0
+    final_train_loss = 0.0  # Initialize final loss tracking
     
     for block_idx in pbar:
         # Calculate how many steps to process in this block
@@ -570,6 +571,7 @@ def main():
         
         # Calculate average loss for this block and update progress bar
         avg_block_loss = jnp.mean(block_losses)
+        final_train_loss = float(avg_block_loss)  # Update final loss
         current_step += block_size
         pbar.set_postfix(loss=f"{avg_block_loss:.4f}", step=f"{current_step}/{config['train_steps']}")
         
@@ -666,7 +668,7 @@ def main():
             'precision': 'mixed_bfloat16_rope',
             'multi_gpu': True,
             'num_devices': jax.device_count(),
-            'final_train_loss': float(loss),
+            'final_train_loss': final_train_loss,
             'final_val_loss': float(val_loss) if 'val_loss' in locals() and not config["disable_validation"] else None
         }
         
