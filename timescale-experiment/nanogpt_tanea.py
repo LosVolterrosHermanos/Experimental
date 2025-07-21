@@ -353,26 +353,61 @@ def parse_args():
     )
     return parser.parse_args()
 
-def evaluate_validation_loss(state, val_dataset, config, eval_step_fn, val_steps=20):
-    """Evaluate validation loss with multi-GPU support"""
-    total_loss = 0.0
-    steps_taken = 0
+def create_eval_block_fn(mesh):
+    """Create a JIT-compiled evaluation block function with mesh frozen."""
+    
+    # Create the eval step function with mesh frozen
+    eval_step_fn = jax.jit(functools.partial(eval_step_sharded, mesh=mesh))
+    
+    @jax.jit
+    def eval_block(state, data_batch):
+        """Evaluate multiple steps using jax.lax.scan without host-side control flow."""
+        def eval_step_scan(carry_state, batch_data):
+            x, y, w = batch_data
+            loss = eval_step_fn(carry_state, x, y)
+            return carry_state, loss  # State doesn't change during evaluation
+        
+        # Run scan over the data batch
+        _, losses = jax.lax.scan(
+            eval_step_scan,
+            state,
+            data_batch  # Shape: (val_steps, batch_size, seq_len)
+        )
+        return losses
+    
+    return eval_block
+
+def evaluate_validation_loss(state, val_dataset, config, eval_block_fn, val_steps=20):
+    """Evaluate validation loss with multi-GPU support using scan blocks"""
     
     # Create a fresh iterator each time we evaluate validation loss, which will be sharded across devices
     val_iterator = val_dataset.iterate_once(config["val_batch_size"], config["seq_len"])
     
-    for x, y, w in val_iterator:
-        if steps_taken >= val_steps:
-            break
-            
-        loss = eval_step_fn(state, x, y)  # Forward pass only for validation
-        total_loss += loss
-        steps_taken += 1
+    # Collect validation data for the entire block
+    val_data = []
+    steps_collected = 0
     
-    if steps_taken == 0:
+    for x, y, w in val_iterator:
+        if steps_collected >= val_steps:
+            break
+        val_data.append((x, y, w))
+        steps_collected += 1
+    
+    if steps_collected == 0:
         return float('inf')  # Return inf if no validation data
     
-    return total_loss / steps_taken
+    # Stack the data into arrays for scan
+    # Shape: (steps_collected, batch_size, seq_len)
+    val_x = jnp.stack([item[0] for item in val_data])
+    val_y = jnp.stack([item[1] for item in val_data])
+    val_w = jnp.stack([item[2] for item in val_data])
+    val_data_batch = (val_x, val_y, val_w)
+    
+    # Run the evaluation scan block
+    val_losses = eval_block_fn(state, val_data_batch)
+    
+    # Return average validation loss
+    return jnp.mean(val_losses)
 
 def main():
     """
@@ -488,6 +523,8 @@ def main():
     
     # Create JIT-compiled train block function with mesh frozen
     train_block_fn = create_train_block_fn(mesh)
+    # Create JIT-compiled eval block function with mesh frozen
+    eval_block_fn = create_eval_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
@@ -582,7 +619,7 @@ def main():
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
-                val_loss = evaluate_validation_loss(state, val_dataset, config, eval_step_fn, config["val_steps"])
+                val_loss = evaluate_validation_loss(state, val_dataset, config, eval_block_fn, config["val_steps"])
             
             total_tokens = current_step * config["batch_size"] * config["seq_len"]
             metrics_history['step'].append(current_step)
