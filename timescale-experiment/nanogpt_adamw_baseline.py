@@ -49,6 +49,7 @@ from flax import linen as nn
 
 LOG_STEPS_BASE = 1.01
 INIT_STD = 0.02
+SCAN_BLOCK_SIZE = 10
 
 # Set up logging
 logging.basicConfig(
@@ -66,7 +67,7 @@ def _init_train_state_sharded(config, model, key, mesh):
     def init(rng, inputs):
         params = model.init(rng)
         
-        # Initialize AdamW optimizer with optional WSD schedule
+        # Create base AdamW optimizer with optional WSD schedule
         if config["enable_wsd"]:
             # Create WSD (Warmup-Stable-Decay) schedule
             if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 0.0:
@@ -78,26 +79,34 @@ def _init_train_state_sharded(config, model, key, mesh):
             else:
                 wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
             
-            optimizer = optax.chain(
+            base_optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 optax.adamw(
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"]
+                    weight_decay=config["weight_decay"],
+                    mu_dtype=jnp.float32
                 ),
                 optax.scale_by_schedule(wsd_schedule)
             )
         else:
-            optimizer = optax.chain(
+            base_optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 optax.adamw(
                     learning_rate=config["lr"],
                     b1=config["beta1"],
                     b2=config["beta2"],
-                    weight_decay=config["weight_decay"]
+                    weight_decay=config["weight_decay"],
+                    mu_dtype=jnp.float32
                 )
             )
+
+        # Wrap with MultiSteps for gradient accumulation
+        if config["grad_accumulation_steps"] > 1:
+            optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config["grad_accumulation_steps"])
+        else:
+            optimizer = base_optimizer
         
         return TrainState.create(
             apply_fn=model.apply,
@@ -136,6 +145,54 @@ def eval_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: M
     # Loss computation in float32 for numerical stability
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
     return loss
+
+def create_train_block_fn(mesh):
+    """Create a JIT-compiled train block function with mesh frozen."""
+    
+    # Create the train step function with mesh frozen
+    train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))
+    
+    @jax.jit
+    def train_block(state, data_batch):
+        """Train for multiple steps using jax.lax.scan without host-side control flow."""
+        def train_step_scan(carry_state, batch_data):
+            x, y, w = batch_data
+            loss, new_state = train_step_fn(carry_state, x, y)
+            return new_state, loss
+        
+        # Run scan over the data batch
+        final_state, losses = jax.lax.scan(
+            train_step_scan,
+            state,
+            data_batch  # Shape: (scan_batch_size, batch_size, seq_len)
+        )
+        return final_state, losses
+    
+    return train_block
+
+def create_eval_block_fn(mesh):
+    """Create a JIT-compiled evaluation block function with mesh frozen."""
+    
+    # Create the eval step function with mesh frozen
+    eval_step_fn = jax.jit(functools.partial(eval_step_sharded, mesh=mesh))
+    
+    @jax.jit
+    def eval_block(state, data_batch):
+        """Evaluate multiple steps using jax.lax.scan without host-side control flow."""
+        def eval_step_scan(carry_state, batch_data):
+            x, y, w = batch_data
+            loss = eval_step_fn(carry_state, x, y)
+            return carry_state, loss  # State doesn't change during evaluation
+        
+        # Run scan over the data batch
+        _, losses = jax.lax.scan(
+            eval_step_scan,
+            state,
+            data_batch  # Shape: (val_steps, batch_size, seq_len)
+        )
+        return losses
+    
+    return eval_block
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train nanogpt with AdamW optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs")
@@ -235,28 +292,43 @@ def parse_args():
         choices=["GPT2-nano", "GPT2-medium", "GPT2-large", "GPT2-jumbo"],
         help="Model size to use"
     )
+    parser.add_argument(
+        "--grad_accumulation_steps", type=int, default=1,
+        help="Number of gradient accumulation steps (default: 1, no accumulation)"
+    )
     return parser.parse_args()
 
-def evaluate_validation_loss(state, val_dataset, config, eval_step_fn, val_steps=20):
-    """Evaluate validation loss with multi-GPU support"""
-    total_loss = 0.0
-    steps_taken = 0
+def evaluate_validation_loss(state, val_dataset, config, eval_block_fn, val_steps=20):
+    """Evaluate validation loss with multi-GPU support using scan blocks"""
     
     # Create a fresh iterator each time we evaluate validation loss, which will be sharded across devices
     val_iterator = val_dataset.iterate_once(config["val_batch_size"], config["seq_len"])
     
-    for x, y, w in val_iterator:
-        if steps_taken >= val_steps:
-            break
-            
-        loss = eval_step_fn(state, x, y)  # Forward pass only for validation
-        total_loss += loss
-        steps_taken += 1
+    # Collect validation data for the entire block
+    val_data = []
+    steps_collected = 0
     
-    if steps_taken == 0:
+    for x, y, w in val_iterator:
+        if steps_collected >= val_steps:
+            break
+        val_data.append((x, y, w))
+        steps_collected += 1
+    
+    if steps_collected == 0:
         return float('inf')  # Return inf if no validation data
     
-    return total_loss / steps_taken
+    # Stack the data into arrays for scan
+    # Shape: (steps_collected, batch_size, seq_len)
+    val_x = jnp.stack([item[0] for item in val_data])
+    val_y = jnp.stack([item[1] for item in val_data])
+    val_w = jnp.stack([item[2] for item in val_data])
+    val_data_batch = (val_x, val_y, val_w)
+    
+    # Run the evaluation scan block
+    val_losses = eval_block_fn(state, val_data_batch)
+    
+    # Return average validation loss
+    return jnp.mean(val_losses)
 
 def main():
     """
@@ -329,16 +401,22 @@ def main():
         "warmup_fraction": args.warmup_fraction,
         "decay_fraction": args.decay_fraction,
         "model_size": args.model_size,
+        "grad_accumulation_steps": args.grad_accumulation_steps,
         "precision": "mixed_bfloat16_rope",
         "num_devices": jax.device_count()
     }
     
-    # Create LOG_STEPS
-    LOG_STEPS = jnp.unique(jnp.concatenate([
+    # Calculate number of blocks and create block-based logging steps
+    total_blocks = (config["train_steps"] + SCAN_BLOCK_SIZE - 1) // SCAN_BLOCK_SIZE
+    
+    # Create LOG_STEPS based on blocks (then convert back to step numbers)
+    LOG_BLOCKS = jnp.unique(jnp.concatenate([
         jnp.array([0]),
-        jnp.int32(LOG_STEPS_BASE**jnp.arange(1, jnp.ceil(jnp.log(config["train_steps"])/jnp.log(LOG_STEPS_BASE)))),
-        jnp.array([config["train_steps"]])
+        jnp.int32(LOG_STEPS_BASE**jnp.arange(1, jnp.ceil(jnp.log(total_blocks)/jnp.log(LOG_STEPS_BASE)))),
+        jnp.array([total_blocks])
     ]))
+    # Convert block numbers to step numbers (end of each block)
+    LOG_STEPS = jnp.minimum(LOG_BLOCKS * SCAN_BLOCK_SIZE, config["train_steps"])
     
     # Initialize model with mixed precision
     key = jax.random.PRNGKey(0)
@@ -350,6 +428,11 @@ def main():
     # Initialize sharded train state
     shardings, state = _init_train_state_sharded(config, model, key, mesh)
     num_params = count_params(state.params)
+    
+    # Create JIT-compiled train block function with mesh frozen
+    train_block_fn = create_train_block_fn(mesh)
+    # Create JIT-compiled eval block function with mesh frozen
+    eval_block_fn = create_eval_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
     logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
@@ -388,35 +471,54 @@ def main():
         'time_elapsed': []
     }
     
-    # Training loop with loss logging
-    pbar = tqdm(range(config["train_steps"]), desc="Training")
+    # Training loop with scan blocks
+    pbar = tqdm(range(total_blocks), desc="Training Blocks")
     start_time = time.time()
-    losses = []
+    current_step = 0
+    final_train_loss = 0.0  # Initialize final loss tracking
     
-    for step in pbar:
-        # Get next batch
-        x, y, w = next(train_iterator)
+    for block_idx in pbar:
+        # Calculate how many steps to process in this block
+        remaining_steps = config["train_steps"] - current_step
+        block_size = min(SCAN_BLOCK_SIZE, remaining_steps)
         
-        # Forward and backward pass with sharding
-        loss, state = train_step_fn(state, x, y)
-        losses.append(loss)
-        # Update progress bar
-        if step % 10 == 0:
-            avg_loss = np.mean(np.array(losses))
-            losses = []
-            pbar.set_postfix(loss=f"{avg_loss:.4f}")
+        if block_size <= 0:
+            break
         
-        # Log metrics at specified steps
-        if step in LOG_STEPS:
+        # Collect data for the entire block
+        block_data = []
+        for _ in range(block_size):
+            x, y, w = next(train_iterator)
+            block_data.append((x, y, w))
+        
+        # Stack the data into arrays for scan
+        # Shape: (block_size, batch_size, seq_len)
+        block_x = jnp.stack([item[0] for item in block_data])
+        block_y = jnp.stack([item[1] for item in block_data])
+        block_w = jnp.stack([item[2] for item in block_data])
+        data_batch = (block_x, block_y, block_w)
+        
+        # Run the scan block
+        state, block_losses = train_block_fn(state, data_batch)
+        
+        # Calculate average loss for this block and update progress bar
+        avg_block_loss = jnp.mean(block_losses)
+        final_train_loss = float(avg_block_loss)  # Update final loss
+        current_step += block_size
+        pbar.set_postfix(loss=f"{avg_block_loss:.4f}", step=f"{current_step}/{config['train_steps']}")
+        
+        # Log metrics at specified steps (check at end of each block)
+        if current_step in LOG_STEPS:
+            jax.block_until_ready(avg_block_loss)
             # Evaluate validation loss (if enabled)
             if config["disable_validation"]:
                 val_loss = float('nan')  # Use NaN to indicate disabled validation
             else:
-                val_loss = evaluate_validation_loss(state, val_dataset, config, eval_step_fn, config["val_steps"])
+                val_loss = evaluate_validation_loss(state, val_dataset, config, eval_block_fn, config["val_steps"])
             
-            total_tokens = step * config["batch_size"] * config["seq_len"]
-            metrics_history['step'].append(step)
-            metrics_history['train_loss'].append(float(loss))
+            total_tokens = current_step * config["batch_size"] * config["seq_len"]
+            metrics_history['step'].append(current_step)
+            metrics_history['train_loss'].append(float(avg_block_loss))
             metrics_history['val_loss'].append(float(val_loss))
             metrics_history['tokens_processed'].append(total_tokens)
             metrics_history['time_elapsed'].append(time.time() - start_time)
@@ -424,8 +526,9 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
-            logger.info(f"\nStep: {step}/{config['train_steps']} ({100.0 * step / config['train_steps']:.1f}%)")
-            logger.info(f"  Train Loss: {loss:.6f}")
+            effective_batch_size = config["batch_size"] * config["grad_accumulation_steps"]
+            logger.info(f"\nStep: {current_step}/{config['train_steps']} ({100.0 * current_step / config['train_steps']:.1f}%)")
+            logger.info(f"  Train Loss: {avg_block_loss:.6f}")
             if config["disable_validation"]:
                 logger.info(f"  Val Loss: disabled")
             else:
@@ -433,6 +536,10 @@ def main():
             logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             logger.info(f"  Multi-GPU throughput: {average_tokens_per_second/jax.device_count():.1f} tokens/s per device")
+            if config["grad_accumulation_steps"] > 1:
+                logger.info(f"  Batch Size: {config['batch_size']} per step, {effective_batch_size} effective (grad accumulation: {config['grad_accumulation_steps']})")
+            else:
+                logger.info(f"  Batch Size: {config['batch_size']}")
             logger.info(f"  Optimizer: AdamW (lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']})")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
             logger.info(f"  Gradient Clipping: {config['grad_clip']}")
@@ -492,7 +599,7 @@ def main():
             'precision': 'mixed_bfloat16_rope',
             'multi_gpu': True,
             'num_devices': jax.device_count(),
-            'final_train_loss': float(loss),
+            'final_train_loss': final_train_loss,
             'final_val_loss': float(val_loss) if 'val_loss' in locals() and not config["disable_validation"] else None
         }
         
