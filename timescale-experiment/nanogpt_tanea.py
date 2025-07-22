@@ -538,7 +538,7 @@ def main():
     eval_block_fn = create_eval_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
-    logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info("Using mixed precision (bfloat16 model, float32 optimizer) with RoPE")
     logger.info(f"Multi-GPU data parallelism enabled with {jax.device_count()} devices")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
