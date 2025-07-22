@@ -70,11 +70,11 @@ def _init_train_state_sharded(config, model, key, mesh):
         # Create base AdamW optimizer with optional WSD schedule
         if config["enable_wsd"]:
             # Create WSD (Warmup-Stable-Decay) schedule
-            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 0.0:
+            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : 1.0
-            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] > 0.0:
+            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] < 1.0:
                 wsd_schedule = lambda t : jnp.minimum( (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"]),1.0)
-            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 0.0:
+            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]),1.0)
             else:
                 wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
@@ -242,7 +242,7 @@ def parse_args():
         help="Beta1 parameter for AdamW"
     )
     parser.add_argument(
-        "--beta2", type=float, default=0.999,
+        "--beta2", type=float, default=0.95,
         help="Beta2 parameter for AdamW"
     )
     parser.add_argument(
@@ -279,7 +279,7 @@ def parse_args():
         help="Fraction of training steps for warmup phase (default: 0.1)"
     )
     parser.add_argument(
-        "--decay_fraction", type=float, default=0.0,
+        "--decay_fraction", type=float, default=1.0,
         help="Final decay fraction for WSD schedule (default: 0.0)"
     )
     # Checkpoint parameters
@@ -435,7 +435,7 @@ def main():
     eval_block_fn = create_eval_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
-    logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info("Using mixed precision (bfloat16 model, float32 optimizer) with RoPE")
     logger.info(f"Multi-GPU data parallelism enabled with {jax.device_count()} devices")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
