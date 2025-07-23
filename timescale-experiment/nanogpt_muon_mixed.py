@@ -352,11 +352,11 @@ def parse_args():
         help="Enable WSD (Warmup-Stable-Decay) schedule using optax.chain"
     )
     parser.add_argument(
-        "--warmup_fraction", type=float, default=0.1,
+        "--warmup_fraction", type=float, default=0.02,
         help="Fraction of training steps for warmup phase (default: 0.1)"
     )
     parser.add_argument(
-        "--decay_fraction", type=float, default=1.0,
+        "--decay_fraction", type=float, default=0.8,
         help="Final decay fraction for WSD schedule (default: 0.0)"
     )
     # Checkpoint parameters
