@@ -146,28 +146,34 @@ def _init_train_state_sharded(config, model, key, mesh):
                                 momentum_flavor=config["momentum_flavor"], clipsnr=config["clipsnr"],
                                 y_dtype=jnp.float32)
 
-        # Create optimizer chain with optional WSD schedule
+        # Create base optimizer chain with optional WSD schedule
         if config["enable_wsd"]:
             # Create WSD (Warmup-Stable-Decay) schedule
-            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 0.0:
+            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : 1.0
-            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] > 0.0:
+            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] < 1.0:
                 wsd_schedule = lambda t : jnp.minimum( (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"]),1.0)
-            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 0.0:
+            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]),1.0)
             else:
                 wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
 
-            optimizer = optax.chain(
+            base_optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 tanea,
                 optax.scale_by_schedule(wsd_schedule)
             )
         else:
-            optimizer = optax.chain(
+            base_optimizer = optax.chain(
                 optax.clip_by_global_norm(config["grad_clip"]),
                 tanea
             )
+
+        # Wrap with MultiSteps for gradient accumulation
+        if config["grad_accumulation_steps"] > 1:
+            optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config["grad_accumulation_steps"])
+        else:
+            optimizer = base_optimizer
         
         return TrainState.create(
             apply_fn=model.apply,
@@ -351,6 +357,10 @@ def parse_args():
         choices=["GPT2-nano", "GPT2-medium", "GPT2-large", "GPT2-jumbo"],
         help="Model size to use"
     )
+    parser.add_argument(
+        "--grad_accumulation_steps", type=int, default=1,
+        help="Number of gradient accumulation steps (default: 1, no accumulation)"
+    )
     return parser.parse_args()
 
 def create_eval_block_fn(mesh):
@@ -485,6 +495,7 @@ def main():
         "clipsnr": args.clipsnr,
         "disable_checkpoint": args.disable_checkpoint,
         "model_size": args.model_size,
+        "grad_accumulation_steps": args.grad_accumulation_steps,
         "precision": "mixed_bfloat16_rope",
         "num_devices": jax.device_count()
     }
@@ -527,7 +538,7 @@ def main():
     eval_block_fn = create_eval_block_fn(mesh)
     
     logger.info(f"Model initialized with {num_params:,} parameters")
-    logger.info("Using mixed precision (bfloat16 matmuls, float32 everything else) with RoPE")
+    logger.info("Using mixed precision (bfloat16 model, float32 optimizer) with RoPE")
     logger.info(f"Multi-GPU data parallelism enabled with {jax.device_count()} devices")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
@@ -631,6 +642,7 @@ def main():
             # Print detailed metrics
             elapsed = time.time() - start_time
             average_tokens_per_second = total_tokens / elapsed
+            effective_batch_size = config["batch_size"] * config["grad_accumulation_steps"]
             logger.info(f"\nStep: {current_step}/{config['train_steps']} ({100.0 * current_step / config['train_steps']:.1f}%)")
             logger.info(f"  Train Loss: {avg_block_loss:.6f}")
             if config["disable_validation"]:
@@ -640,6 +652,10 @@ def main():
             logger.info(f"  Time: {elapsed:.2f}s ({elapsed/60:.2f}m)")
             logger.info(f"  Tokens: {total_tokens:,} ({average_tokens_per_second:.1f} tokens/s)")
             logger.info(f"  Multi-GPU throughput: {average_tokens_per_second/jax.device_count():.1f} tokens/s per device")
+            if config["grad_accumulation_steps"] > 1:
+                logger.info(f"  Batch Size: {config['batch_size']} per step, {effective_batch_size} effective (grad accumulation: {config['grad_accumulation_steps']})")
+            else:
+                logger.info(f"  Batch Size: {config['batch_size']}")
             logger.info(f"  G2: {config['tanea_g2']}, G3: {config['tanea_g3']}, Delta: {config['tanea_delta']}")
             logger.info(f"  Momentum Flavor: {config['momentum_flavor']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")

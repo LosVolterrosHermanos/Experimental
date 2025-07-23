@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """
-NanoGPT training with AdamW optimizer using mixed precision (bfloat16 matmuls, float32 everything else) and RoPE.
+NanoGPT training with Muon optimizer for transformer layers and AdamW for embedding/readout layers.
+Uses mixed precision (bfloat16 matmuls, float32 everything else) and RoPE.
 Multi-GPU data parallel version for 4 GPU systems.
-Based on nanogpt_adamw_baseline_mixed_bf16_rope.py with multi-GPU support from nanodo patterns.
+Based on nanogpt_adamw_baseline.py with Muon integration.
 """
 
 import os
@@ -35,6 +36,10 @@ from nanogpt_minimal import count_params
 from nanogpt_rope_mixed_precision_v4 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
+# Import Muon optimizer
+sys.path.append('../muon')
+from _muon import muon, scale_by_muon
+
 import jax
 # Enable bfloat16 for matrix multiplications only
 jax.config.update('jax_default_matmul_precision', 'bfloat16')
@@ -55,10 +60,30 @@ SCAN_BLOCK_SIZE = 10
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='train_adamw_multi_gpu.log',  # Separate log file
+    filename='train_muon_mixed_multi_gpu.log',  # Separate log file
     filemode='w'
 )
 logger = logging.getLogger(__name__)
+
+def create_param_labels(params):
+    """Create parameter labels for partitioning between Muon and AdamW optimizers.
+    
+    Args:
+        params: Parameter tree from the model
+        
+    Returns:
+        Label tree with 'muon' for transformer layers and 'adamw' for embedding/readout
+    """
+    def label_fn(path, param):
+        path_str = '.'.join(str(p) for p in path)
+        # Use AdamW for embedding and readout layers
+        if 'wte' in path_str or 'wpe' in path_str or 'ln_f' in path_str or 'head' in path_str:
+            return 'adamw'
+        # Use Muon for transformer layers (attention, MLP)
+        else:
+            return 'muon'
+    
+    return jax.tree_util.tree_map_with_path(label_fn, params)
 
 def _init_train_state_sharded(config, model, key, mesh):
     """Creates a sharded training state for multi-GPU training."""
@@ -67,7 +92,45 @@ def _init_train_state_sharded(config, model, key, mesh):
     def init(rng, inputs):
         params = model.init(rng)
         
-        # Create base AdamW optimizer with optional WSD schedule
+        # Create parameter labels for partitioning
+        param_labels = create_param_labels(params)
+        
+        # Create Muon optimizer for transformer layers
+        muon_transforms = []
+        muon_transforms.append(optax.clip_by_global_norm(config["grad_clip"]))
+        muon_transforms.append(scale_by_muon(
+            ns_coeffs=config["muon_ns_coeffs"],
+            ns_steps=config["muon_ns_steps"],
+            beta=config["muon_beta"],
+            eps=config["muon_eps"],
+            mu_dtype=jnp.float32,
+            nesterov=config["muon_nesterov"],
+            adaptive=config["muon_adaptive"]
+        ))
+        muon_transforms.append(optax.add_decayed_weights(config["muon_weight_decay"]))
+        muon_transforms.append(optax.scale_by_learning_rate(config["muon_lr"]))
+        
+        # Create AdamW optimizer for embedding/readout layers  
+        adamw_transforms = []
+        adamw_transforms.append(optax.clip_by_global_norm(config["grad_clip"]))
+        adamw_transforms.append(optax.adamw(
+            learning_rate=config["adamw_lr"],
+            b1=config["adamw_beta1"],
+            b2=config["adamw_beta2"],
+            weight_decay=config["adamw_weight_decay"],
+            mu_dtype=jnp.float32
+        ))
+        
+        # Create base optimizer using partition
+        base_optimizer = optax.partition(
+            transforms={
+                'muon': optax.chain(*muon_transforms),
+                'adamw': optax.chain(*adamw_transforms)
+            },
+            param_labels=param_labels
+        )
+        
+        # Apply WSD schedule if enabled
         if config["enable_wsd"]:
             # Create WSD (Warmup-Stable-Decay) schedule
             if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 1.0:
@@ -80,26 +143,8 @@ def _init_train_state_sharded(config, model, key, mesh):
                 wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
             
             base_optimizer = optax.chain(
-                optax.clip_by_global_norm(config["grad_clip"]),
-                optax.adamw(
-                    learning_rate=config["lr"],
-                    b1=config["beta1"],
-                    b2=config["beta2"],
-                    weight_decay=config["weight_decay"],
-                    mu_dtype=jnp.float32
-                ),
+                base_optimizer,
                 optax.scale_by_schedule(wsd_schedule)
-            )
-        else:
-            base_optimizer = optax.chain(
-                optax.clip_by_global_norm(config["grad_clip"]),
-                optax.adamw(
-                    learning_rate=config["lr"],
-                    b1=config["beta1"],
-                    b2=config["beta2"],
-                    weight_decay=config["weight_decay"],
-                    mu_dtype=jnp.float32
-                )
             )
 
         # Wrap with MultiSteps for gradient accumulation
@@ -195,7 +240,7 @@ def create_eval_block_fn(mesh):
     return eval_block
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train nanogpt with AdamW optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs")
+    parser = argparse.ArgumentParser(description="Train nanogpt with Muon+AdamW mixed optimizer using mixed precision (bfloat16 matmuls) and RoPE on multiple GPUs")
     parser.add_argument(
         "--train_steps", type=int, default=10000,
         help="Number of training steps"
@@ -232,21 +277,50 @@ def parse_args():
         "--results_dir", type=str, default="results",
         help="Directory to store results"
     )
-    # Add AdamW hyperparameters
+    # Muon hyperparameters
     parser.add_argument(
-        "--lr", type=float, default=3e-4,
-        help="Learning rate for AdamW optimizer"
+        "--muon_lr", type=float, default=3e-4,
+        help="Learning rate for Muon optimizer (transformer layers)"
     )
     parser.add_argument(
-        "--beta1", type=float, default=0.9,
+        "--muon_beta", type=float, default=0.95,
+        help="Beta parameter for Muon momentum"
+    )
+    parser.add_argument(
+        "--muon_eps", type=float, default=1e-8,
+        help="Epsilon for Muon optimizer"
+    )
+    parser.add_argument(
+        "--muon_weight_decay", type=float, default=0.01,
+        help="Weight decay for Muon optimizer"
+    )
+    parser.add_argument(
+        "--muon_ns_steps", type=int, default=5,
+        help="Newton-Schulz iteration steps for Muon"
+    )
+    parser.add_argument(
+        "--muon_nesterov", action="store_true",
+        help="Enable Nesterov momentum for Muon"
+    )
+    parser.add_argument(
+        "--muon_adaptive", action="store_true",
+        help="Enable adaptive scaling for Muon"
+    )
+    # AdamW hyperparameters for embeddings
+    parser.add_argument(
+        "--adamw_lr", type=float, default=3e-4,
+        help="Learning rate for AdamW optimizer (embedding/readout layers)"
+    )
+    parser.add_argument(
+        "--adamw_beta1", type=float, default=0.9,
         help="Beta1 parameter for AdamW"
     )
     parser.add_argument(
-        "--beta2", type=float, default=0.95,
+        "--adamw_beta2", type=float, default=0.95,
         help="Beta2 parameter for AdamW"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=0.01,
+        "--adamw_weight_decay", type=float, default=0.01,
         help="Weight decay parameter for AdamW"
     )
     parser.add_argument(
@@ -332,7 +406,7 @@ def evaluate_validation_loss(state, val_dataset, config, eval_block_fn, val_step
 
 def main():
     """
-    Train NanoGPT with AdamW optimizer using mixed precision, RoPE, and multi-GPU data parallelism.
+    Train NanoGPT with Muon+AdamW mixed optimizer using mixed precision, RoPE, and multi-GPU data parallelism.
     """
     args = parse_args()
     
@@ -377,6 +451,9 @@ def main():
         # Default to enough tokens for validation batches
         val_max_tokens = args.val_batch_size * args.seq_len * (args.val_steps+1)
     
+    # Default Newton-Schulz coefficients for Muon
+    muon_ns_coeffs = (3.4445, -4.7750, 2.0315)
+    
     config = {
         "train_steps": args.train_steps,
         "batch_size": args.batch_size,
@@ -389,10 +466,18 @@ def main():
         "grad_clip": args.grad_clip,
         "init_std": args.init_std,
         "results_dir": args.results_dir,
-        "lr": args.lr,
-        "beta1": args.beta1,
-        "beta2": args.beta2,
-        "weight_decay": args.weight_decay,
+        "muon_lr": args.muon_lr,
+        "muon_beta": args.muon_beta,
+        "muon_eps": args.muon_eps,
+        "muon_weight_decay": args.muon_weight_decay,
+        "muon_ns_coeffs": muon_ns_coeffs,
+        "muon_ns_steps": args.muon_ns_steps,
+        "muon_nesterov": args.muon_nesterov,
+        "muon_adaptive": args.muon_adaptive,
+        "adamw_lr": args.adamw_lr,
+        "adamw_beta1": args.adamw_beta1,
+        "adamw_beta2": args.adamw_beta2,
+        "adamw_weight_decay": args.adamw_weight_decay,
         "rope_base": args.rope_base,
         "attention_implementation": args.attention_implementation,
         "disable_validation": args.disable_validation,
@@ -439,7 +524,9 @@ def main():
     logger.info(f"Multi-GPU data parallelism enabled with {jax.device_count()} devices")
     logger.info(f"Attention implementation: {config['attention_implementation']}")
     logger.info(f"Validation: {'disabled' if config['disable_validation'] else 'enabled'}")
-    logger.info(f"Optimizer: AdamW (lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']})")
+    logger.info(f"Optimizer: Muon (transformer layers) + AdamW (embedding/readout layers)")
+    logger.info(f"Muon params: lr={config['muon_lr']}, β={config['muon_beta']}, wd={config['muon_weight_decay']}, ns_steps={config['muon_ns_steps']}")
+    logger.info(f"AdamW params: lr={config['adamw_lr']}, β1={config['adamw_beta1']}, β2={config['adamw_beta2']}, wd={config['adamw_weight_decay']}")
     logger.info(f"Gradient clipping: {config['grad_clip']}")
     
     # Initialize datasets using the new utility function
@@ -540,7 +627,9 @@ def main():
                 logger.info(f"  Batch Size: {config['batch_size']} per step, {effective_batch_size} effective (grad accumulation: {config['grad_accumulation_steps']})")
             else:
                 logger.info(f"  Batch Size: {config['batch_size']}")
-            logger.info(f"  Optimizer: AdamW (lr={config['lr']}, β1={config['beta1']}, β2={config['beta2']}, wd={config['weight_decay']})")
+            logger.info(f"  Optimizer: Muon (transformer) + AdamW (embedding/readout)")
+            logger.info(f"  Muon: lr={config['muon_lr']}, β={config['muon_beta']}, wd={config['muon_weight_decay']}")
+            logger.info(f"  AdamW: lr={config['adamw_lr']}, β1={config['adamw_beta1']}, β2={config['adamw_beta2']}, wd={config['adamw_weight_decay']}")
             logger.info(f"  Attention Implementation: {config['attention_implementation']}")
             logger.info(f"  Gradient Clipping: {config['grad_clip']}")
             if config["enable_wsd"]:
@@ -554,7 +643,7 @@ def main():
         'metrics': metrics_history,
         'config': config,
         'num_params': num_params,
-        'optimizer_type': 'adamw',
+        'optimizer_type': 'muon_adamw_mixed',
         'precision': 'mixed_bfloat16_rope',
         'multi_gpu': True,
         'num_devices': jax.device_count()
@@ -566,10 +655,10 @@ def main():
         wsd_suffix = f"_wsd_{config['warmup_fraction']}_{config['decay_fraction']}"
     
     results_filename = (
-        f"{config['results_dir']}/nanogpt_adamw_baseline_mixed_bf16_rope_multi_gpu_{timestamp}_"
+        f"{config['results_dir']}/nanogpt_muon_mixed_baseline_mixed_bf16_rope_multi_gpu_{timestamp}_"
         f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
         f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
-        f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
+        f"muon_lr_{config['muon_lr']}_adamw_lr_{config['adamw_lr']}_"
         f"attn_{config['attention_implementation']}{wsd_suffix}.pkl"
     )
     
@@ -584,10 +673,10 @@ def main():
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         checkpoint_filename = (
-            f"{checkpoint_dir}/nanogpt_adamw_checkpoint_mixed_bf16_rope_multi_gpu_{timestamp}_"
+            f"{checkpoint_dir}/nanogpt_muon_mixed_checkpoint_mixed_bf16_rope_multi_gpu_{timestamp}_"
             f"steps_{config['train_steps']}_bs_{config['batch_size']}_"
             f"seq_{config['seq_len']}_devices_{jax.device_count()}_"
-            f"lr_{config['lr']}_beta1_{config['beta1']}_beta2_{config['beta2']}_wd_{config['weight_decay']}_"
+            f"muon_lr_{config['muon_lr']}_adamw_lr_{config['adamw_lr']}_"
             f"attn_{config['attention_implementation']}{wsd_suffix}.pkl"
         )
         
@@ -595,7 +684,7 @@ def main():
             'params': state.params,
             'config': config,
             'num_params': num_params,
-            'optimizer_type': 'adamw',
+            'optimizer_type': 'muon_adamw_mixed',
             'precision': 'mixed_bfloat16_rope',
             'multi_gpu': True,
             'num_devices': jax.device_count(),
