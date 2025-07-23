@@ -72,16 +72,19 @@ def create_param_labels(params):
         params: Parameter tree from the model
         
     Returns:
-        Label tree with 'muon' for transformer layers and 'adamw' for embedding/readout
+        Label tree with 'muon' for 2D weight matrices and 'adamw' for 1D parameters and embeddings
     """
     def label_fn(path, param):
         path_str = '.'.join(str(p) for p in path)
         # Use AdamW for embedding and readout layers
         if 'wte' in path_str or 'wpe' in path_str or 'ln_f' in path_str or 'head' in path_str:
             return 'adamw'
-        # Use Muon for transformer layers (attention, MLP)
-        else:
+        # Use Muon only for 2D weight matrices (kernel parameters)
+        # Use AdamW for 1D parameters (biases, layer norm scales/biases)
+        elif param.ndim == 2:
             return 'muon'
+        else:
+            return 'adamw'
     
     return jax.tree_util.tree_map_with_path(label_fn, params)
 
