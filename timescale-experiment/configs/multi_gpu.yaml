@@ -1,0 +1,27 @@
+defaults:
+  - nanogpt_tanea_fsdp
+  - _self_
+
+# Multi-GPU configuration with FSDP
+training:
+  batch_size_train: 32  # Will be divided across GPUs
+  batch_size_valid: 64
+  num_tokens_train: 10000000  # 10M tokens
+  num_tokens_valid: 204800   # 200K tokens
+  eval_every_steps: 50
+
+model:
+  size: "GPT2-nano"
+  block_size: 1024
+  fsdp_enabled: true
+  dtype: "bfloat16"
+
+tanea:
+  g2: 1.46e-4
+  g3: 2.49e-5
+  delta: 8.0
+  momentum_flavor: "mk3"
+
+wandb:
+  project: 'nanogpt-tanea-fsdp-multi-gpu'
+  mode: 'online'

@@ -1,0 +1,24 @@
+defaults:
+  - nanogpt_tanea_fsdp
+  - _self_
+
+# Local development configuration
+training:
+  batch_size_train: 8
+  batch_size_valid: 8
+  num_tokens_train: 100000  # 100K tokens for quick local testing
+  num_tokens_valid: 2048    # 2K tokens for validation
+  eval_every_steps: 20
+
+model:
+  size: "GPT2-nano"
+  block_size: 128  # Smaller for local testing
+  fsdp_enabled: false  # Disable FSDP for single GPU testing
+
+tanea:
+  g2: 1.6e-4
+  g3: 1.6e-4
+  delta: 8.0
+
+wandb:
+  mode: 'offline'

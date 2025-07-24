@@ -1,0 +1,51 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+seed: 0
+
+# Data configuration
+data:
+  root_path: "../dana-nonquadratic-tests/gpt2/fineweb-edu/sample/10BT"
+
+# Training configuration
+training:
+  batch_size_train: 32
+  batch_size_valid: 64
+  num_tokens_train: 1000000  # 1M tokens for training
+  num_tokens_valid: 20480    # 20K tokens for validation
+  eval_every_steps: 100
+  val_steps: 20
+  grad_accumulation_steps: 1
+
+# Model configuration
+model:
+  size: "GPT2-nano"  # GPT2-nano, GPT2-medium, GPT2-large, GPT2-jumbo
+  block_size: 1024
+  init_std: 0.02
+  rope_base: 10000.0
+  attention_implementation: "naive"  # naive, xla, cudnn
+  fsdp_enabled: true
+  dtype: "bfloat16"  # null, bfloat16
+
+# Tanea optimizer configuration
+tanea:
+  g2: 1.0e-4
+  g3: 1.0e-5
+  delta: 8.0
+  kappa: 1.0
+  weight_decay: 0.0
+  power_weight_decay: 1.0
+  weight_decay_ts: 1.0
+  momentum_flavor: "effective-clip"  # effective-clip, theory, always-on, etc.
+  grad_clip: 2.0
+  clipsnr: 2.0
+  enable_wsd: false
+  warmup_fraction: 0.1
+  decay_fraction: 0.0
+
+# Wandb configuration
+wandb:
+  project: 'nanogpt-tanea-fsdp'
+  mode: 'online'  # online, offline, disabled
