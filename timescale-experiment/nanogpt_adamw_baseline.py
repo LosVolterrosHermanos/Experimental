@@ -32,7 +32,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v4 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -209,7 +209,7 @@ def parse_args():
         help="Sequence length for training"
     )
     parser.add_argument(
-        "--val_batch_size", type=int, default=64,
+        "--val_batch_size", type=int, default=32,
         help="Total validation batch size (will be divided across GPUs)"
     )
     parser.add_argument(
@@ -246,7 +246,7 @@ def parse_args():
         help="Beta2 parameter for AdamW"
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=0.01,
+        "--weight_decay", type=float, default=0.001,
         help="Weight decay parameter for AdamW"
     )
     parser.add_argument(
@@ -275,12 +275,12 @@ def parse_args():
         help="Enable WSD (Warmup-Stable-Decay) schedule using optax.chain"
     )
     parser.add_argument(
-        "--warmup_fraction", type=float, default=0.1,
-        help="Fraction of training steps for warmup phase (default: 0.1)"
+        "--warmup_fraction", type=float, default=0.02,
+        help="Fraction of training steps for warmup phase (default: 0.02)"
     )
     parser.add_argument(
-        "--decay_fraction", type=float, default=1.0,
-        help="Final decay fraction for WSD schedule (default: 0.0)"
+        "--decay_fraction", type=float, default=0.2,
+        help="Final decay fraction for WSD schedule (default: 0.2)"
     )
     # Checkpoint parameters
     parser.add_argument(
