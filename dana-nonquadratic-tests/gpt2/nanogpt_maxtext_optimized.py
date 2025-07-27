@@ -150,31 +150,19 @@ class OptimizedCausalSelfAttention(nn.Module):
             dtype=self.config.norm_dtype
         )
         
-        # Set up quantization if enabled
-        quant = None
+        # For MaxText compatibility, we don't create dense_general layers in setup
+        # They will be created dynamically in __call__ with proper input shapes
+        
+        # Store quantization config for runtime use
+        self.quant = None
         if MAXTEXT_AVAILABLE and self.config.use_quantization:
             if self.config.quantization_type == 'int8':
-                quant = AqtQuantization(quant_dg=8, quant_mode='int8')
+                self.quant = AqtQuantization(quant_dg=8, quant_mode='int8')
             elif self.config.quantization_type == 'fp8':
-                quant = AqtQuantization(quant_dg=8, quant_mode='fp8')
+                self.quant = AqtQuantization(quant_dg=8, quant_mode='fp8')
         
-        # Use MaxText's optimized dense layers if available
-        if MAXTEXT_AVAILABLE and self.config.use_fused_qkv:
-            # Fused QKV projection for better performance - use proper input shape
-            self.qkv_proj = dense_general(
-                inputs_shape=(self.config.n_embd,),  # Only the feature dimension matters
-                out_features_shape=(3, self.config.n_head, self.head_dim),
-                axis=-1,
-                kernel_init=nn.initializers.normal(stddev=self.init_std),
-                kernel_axes=("embed", "qkv", "heads", "kv"),
-                dtype=self.config.compute_dtype,
-                weight_dtype=self.config.parameter_dtype,
-                name="qkv_proj",
-                quant=quant,
-                use_bias=True,
-                matmul_precision=self.config.matmul_precision,
-            )
-        else:
+        # Only create fallback layers if not using MaxText optimizations
+        if not (MAXTEXT_AVAILABLE and self.config.use_fused_qkv):
             # Fallback to separate projections
             self.q_proj = nn.Dense(
                 self.config.n_embd,
@@ -192,22 +180,8 @@ class OptimizedCausalSelfAttention(nn.Module):
                 dtype=self.config.parameter_dtype
             )
         
-        # Output projection with MaxText optimizations
-        if MAXTEXT_AVAILABLE:
-            self.out_proj = dense_general(
-                inputs_shape=(1, 1, self.config.n_head, self.head_dim),
-                out_features_shape=self.config.n_embd,
-                axis=(-2, -1),
-                kernel_init=nn.initializers.normal(stddev=self.init_std),
-                kernel_axes=("heads", "kv", "embed"),
-                dtype=self.config.compute_dtype,
-                weight_dtype=self.config.parameter_dtype,
-                name="out_proj",
-                quant=quant,
-                use_bias=True,
-                matmul_precision=self.config.matmul_precision,
-            )
-        else:
+        # Fallback output projection (only used if not using MaxText)
+        if not MAXTEXT_AVAILABLE:
             self.out_proj = nn.Dense(
                 self.config.n_embd,
                 kernel_init=nn.initializers.normal(stddev=self.init_std),
@@ -222,10 +196,22 @@ class OptimizedCausalSelfAttention(nn.Module):
         if MAXTEXT_AVAILABLE:
             x = partitioning.with_sharding_constraint(x, ('data', None, 'tensor'))
         
-        # QKV projection with optimization
-        if MAXTEXT_AVAILABLE and self.config.use_fused_qkv and hasattr(self, 'qkv_proj'):
-            # Use fused QKV for better performance - matches MaxText's approach
-            qkv = self.qkv_proj(x)  # Shape: (B, T, 3, heads, head_dim)
+        # QKV projection with MaxText-style runtime creation
+        if MAXTEXT_AVAILABLE and self.config.use_fused_qkv:
+            # Create fused QKV projection at runtime with actual input shape
+            qkv = dense_general(
+                inputs_shape=x.shape,
+                out_features_shape=(3, self.config.n_head, self.head_dim),
+                axis=-1,
+                kernel_init=nn.initializers.normal(stddev=self.init_std),
+                kernel_axes=("embed", "qkv", "heads", "kv"),
+                dtype=self.config.compute_dtype,
+                weight_dtype=self.config.parameter_dtype,
+                name="qkv_proj",
+                quant=self.quant,
+                use_bias=True,
+                matmul_precision=self.config.matmul_precision,
+            )(x)  # Shape: (B, T, 3, heads, head_dim)
             q, k, v = qkv[:, :, 0, ...], qkv[:, :, 1, ...], qkv[:, :, 2, ...]
         else:
             # Fallback to separate projections
@@ -307,13 +293,29 @@ class OptimizedCausalSelfAttention(nn.Module):
             # Apply attention to values
             y = jnp.einsum('bnts,bsnh->btnh', att, v)
         
-        # Reshape and apply output projection
-        y = jnp.reshape(y, (B, T, C))
+        # Apply output projection with MaxText-style runtime creation
+        if MAXTEXT_AVAILABLE:
+            # MaxText approach: contract over last two dimensions (heads, head_dim)
+            y = dense_general(
+                inputs_shape=y.shape,
+                out_features_shape=(self.config.n_embd,),
+                axis=(-2, -1),
+                kernel_init=nn.initializers.normal(stddev=self.init_std),
+                kernel_axes=("heads", "kv", "embed"),
+                dtype=self.config.compute_dtype,
+                weight_dtype=self.config.parameter_dtype,
+                name="out_proj",
+                quant=self.quant,
+                use_bias=True,
+                matmul_precision=self.config.matmul_precision,
+            )(y)
+        else:
+            # Fallback: reshape then use standard dense layer
+            y = jnp.reshape(y, (B, T, C))
+            y = self.out_proj(y)
         
         if MAXTEXT_AVAILABLE:
             y = partitioning.with_sharding_constraint(y, ('data', None, 'tensor'))
-        
-        y = self.out_proj(y)
         
         return y
 
@@ -324,41 +326,14 @@ class OptimizedMLP(nn.Module):
     init_std: float = 0.02
 
     def setup(self):
-        # Set up quantization if enabled
-        quant = None
+        # Store quantization config for runtime use
+        self.quant = None
         if MAXTEXT_AVAILABLE and self.config.use_quantization:
             if self.config.quantization_type == 'int8':
-                quant = AqtQuantization(quant_dg=8, quant_mode='int8')
+                self.quant = AqtQuantization(quant_dg=8, quant_mode='int8')
         
-        # Use MaxText's optimized dense layers
-        if MAXTEXT_AVAILABLE:
-            self.fc1 = dense_general(
-                inputs_shape=(self.config.n_embd,),
-                out_features_shape=(self.config.n_embd * 4,),
-                axis=-1,
-                kernel_init=nn.initializers.normal(stddev=self.init_std),
-                kernel_axes=("embed", "mlp"),
-                dtype=self.config.compute_dtype,
-                weight_dtype=self.config.parameter_dtype,
-                name="fc1",
-                quant=quant,
-                use_bias=True,
-                matmul_precision=self.config.matmul_precision,
-            )
-            self.fc2 = dense_general(
-                inputs_shape=(self.config.n_embd * 4,),
-                out_features_shape=(self.config.n_embd,),
-                axis=-1,
-                kernel_init=nn.initializers.normal(stddev=self.init_std),
-                kernel_axes=("mlp", "embed"),
-                dtype=self.config.compute_dtype,
-                weight_dtype=self.config.parameter_dtype,
-                name="fc2",
-                quant=quant,
-                use_bias=True,
-                matmul_precision=self.config.matmul_precision,
-            )
-        else:
+        # Only create fallback layers if not using MaxText optimizations
+        if not MAXTEXT_AVAILABLE:
             # Fallback to standard dense layers
             self.fc1 = nn.Dense(
                 self.config.n_embd * 4,
@@ -377,14 +352,48 @@ class OptimizedMLP(nn.Module):
         if MAXTEXT_AVAILABLE:
             x = partitioning.with_sharding_constraint(x, ('data', None, 'tensor'))
         
-        x = self.fc1(x)
+        # First linear layer with MaxText-style runtime creation
+        if MAXTEXT_AVAILABLE:
+            x = dense_general(
+                inputs_shape=x.shape,
+                out_features_shape=(self.config.n_embd * 4,),
+                axis=-1,
+                kernel_init=nn.initializers.normal(stddev=self.init_std),
+                kernel_axes=("embed", "mlp"),
+                dtype=self.config.compute_dtype,
+                weight_dtype=self.config.parameter_dtype,
+                name="fc1",
+                quant=self.quant,
+                use_bias=True,
+                matmul_precision=self.config.matmul_precision,
+            )(x)
+        else:
+            x = self.fc1(x)
+        
         x = nn.gelu(x, approximate=True)
         x = nn.Dropout(rate=self.config.dropout_rate)(x, deterministic=deterministic)
         
         if MAXTEXT_AVAILABLE:
             x = partitioning.with_sharding_constraint(x, ('data', None, 'tensor'))
         
-        x = self.fc2(x)
+        # Second linear layer with MaxText-style runtime creation
+        if MAXTEXT_AVAILABLE:
+            x = dense_general(
+                inputs_shape=x.shape,
+                out_features_shape=(self.config.n_embd,),
+                axis=-1,
+                kernel_init=nn.initializers.normal(stddev=self.init_std),
+                kernel_axes=("mlp", "embed"),
+                dtype=self.config.compute_dtype,
+                weight_dtype=self.config.parameter_dtype,
+                name="fc2",
+                quant=self.quant,
+                use_bias=True,
+                matmul_precision=self.config.matmul_precision,
+            )(x)
+        else:
+            x = self.fc2(x)
+        
         x = nn.Dropout(rate=self.config.dropout_rate)(x, deterministic=deterministic)
         
         return x
@@ -440,24 +449,11 @@ class OptimizedGPTWithRoPE(nn.Module):
             embedding_init=nn.initializers.normal(stddev=self.init_std)
         )
         
-        # Final layer norm and output projection
+        # Final layer norm 
         self.ln_f = nn.LayerNorm(dtype=self.config.norm_dtype)
         
-        if MAXTEXT_AVAILABLE:
-            self.head = dense_general(
-                inputs_shape=(self.config.n_embd,),
-                out_features_shape=(self.config.vocab_size,),
-                axis=-1,
-                kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
-                kernel_axes=("embed", "vocab"),
-                dtype=self.config.compute_dtype,
-                weight_dtype=self.config.parameter_dtype,
-                name="head",
-                quant=None,
-                use_bias=False,
-                matmul_precision=self.config.matmul_precision,
-            )
-        else:
+        # Only create fallback head if not using MaxText optimizations
+        if not MAXTEXT_AVAILABLE:
             self.head = nn.Dense(
                 self.config.vocab_size,
                 kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
@@ -490,8 +486,26 @@ class OptimizedGPTWithRoPE(nn.Module):
         x = self.ln_f(x.astype(self.config.norm_dtype))
         x = x.astype(self.config.compute_dtype)
         
-        # Output projection - convert to float32 for loss computation
-        logits = self.head(x).astype(jnp.float32)
+        # Output projection with MaxText-style runtime creation
+        if MAXTEXT_AVAILABLE:
+            logits = dense_general(
+                inputs_shape=x.shape,
+                out_features_shape=(self.config.vocab_size,),
+                axis=-1,
+                kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
+                kernel_axes=("embed", "vocab"),
+                dtype=self.config.compute_dtype,
+                weight_dtype=self.config.parameter_dtype,
+                name="head",
+                quant=None,
+                use_bias=False,
+                matmul_precision=self.config.matmul_precision,
+            )(x)
+        else:
+            logits = self.head(x)
+        
+        # Convert to float32 for loss computation
+        logits = logits.astype(jnp.float32)
         
         return logits
 
