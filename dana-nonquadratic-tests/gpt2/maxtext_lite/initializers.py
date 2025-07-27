@@ -30,13 +30,24 @@ default_bias_init = jax.nn.initializers.constant(0.0)
 
 
 def nd_dense_init(scale, mode, distribution):
-  """Initializer with in_axis, out_axis set at call time."""
+  """Initializer with in_axis, out_axis set at call time - simplified version."""
   
-  def init_fn(key, shape, dtype, in_axis, out_axis):
-    fn = jax.nn.initializers.variance_scaling(scale, mode, distribution, in_axis, out_axis)
+  def init_fn(key, shape, dtype, in_axis=None, out_axis=None):
+    # For simplified version, use standard variance scaling without explicit axes
+    if in_axis is not None and out_axis is not None:
+      fn = jax.nn.initializers.variance_scaling(scale, mode, distribution, in_axis, out_axis)
+    else:
+      # Fallback to standard initialization
+      fn = jax.nn.initializers.variance_scaling(scale, mode, distribution)
     return fn(key, shape, dtype)
   
-  return init_fn
+  # Also support being called as a standard initializer (without in_axis/out_axis)
+  def simple_init_fn(key, shape, dtype):
+    fn = jax.nn.initializers.variance_scaling(scale, mode, distribution)
+    return fn(key, shape, dtype)
+  
+  # Return the simple version by default for compatibility
+  return simple_init_fn
 
 
 # Simplified version without AQT dependencies

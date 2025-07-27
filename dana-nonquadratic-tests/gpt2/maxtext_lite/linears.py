@@ -109,8 +109,10 @@ def dense_general(
 ):
   """Create a dense general layer - simplified version."""
   
-  if kernel_init is None:
-    kernel_init = nn.initializers.lecun_normal()
+  # Use standard initializer if nd_dense_init is provided
+  if kernel_init is None or hasattr(kernel_init, '__name__') and 'nd_dense_init' in str(kernel_init):
+    # Default to Xavier/Glorot normal initialization
+    kernel_init = nn.initializers.xavier_normal()
   
   return SimpleDenseGeneral(
       features=out_features_shape,
