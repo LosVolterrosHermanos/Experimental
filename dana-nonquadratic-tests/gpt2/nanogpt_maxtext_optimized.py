@@ -160,9 +160,9 @@ class OptimizedCausalSelfAttention(nn.Module):
         
         # Use MaxText's optimized dense layers if available
         if MAXTEXT_AVAILABLE and self.config.use_fused_qkv:
-            # Fused QKV projection for better performance
+            # Fused QKV projection for better performance - use proper input shape
             self.qkv_proj = dense_general(
-                inputs_shape=(1, 1, self.config.n_embd),  # Will be updated at runtime
+                inputs_shape=(self.config.n_embd,),  # Only the feature dimension matters
                 out_features_shape=(3, self.config.n_head, self.head_dim),
                 axis=-1,
                 kernel_init=nn.initializers.normal(stddev=self.init_std),
@@ -224,8 +224,8 @@ class OptimizedCausalSelfAttention(nn.Module):
         
         # QKV projection with optimization
         if MAXTEXT_AVAILABLE and self.config.use_fused_qkv and hasattr(self, 'qkv_proj'):
-            # Use fused QKV for better performance
-            qkv = self.qkv_proj(x)
+            # Use fused QKV for better performance - matches MaxText's approach
+            qkv = self.qkv_proj(x)  # Shape: (B, T, 3, heads, head_dim)
             q, k, v = qkv[:, :, 0, ...], qkv[:, :, 1, ...], qkv[:, :, 2, ...]
         else:
             # Fallback to separate projections
@@ -333,8 +333,8 @@ class OptimizedMLP(nn.Module):
         # Use MaxText's optimized dense layers
         if MAXTEXT_AVAILABLE:
             self.fc1 = dense_general(
-                inputs_shape=(1, 1, self.config.n_embd),
-                out_features_shape=self.config.n_embd * 4,
+                inputs_shape=(self.config.n_embd,),
+                out_features_shape=(self.config.n_embd * 4,),
                 axis=-1,
                 kernel_init=nn.initializers.normal(stddev=self.init_std),
                 kernel_axes=("embed", "mlp"),
@@ -346,8 +346,8 @@ class OptimizedMLP(nn.Module):
                 matmul_precision=self.config.matmul_precision,
             )
             self.fc2 = dense_general(
-                inputs_shape=(1, 1, self.config.n_embd * 4),
-                out_features_shape=self.config.n_embd,
+                inputs_shape=(self.config.n_embd * 4,),
+                out_features_shape=(self.config.n_embd,),
                 axis=-1,
                 kernel_init=nn.initializers.normal(stddev=self.init_std),
                 kernel_axes=("mlp", "embed"),
@@ -445,8 +445,8 @@ class OptimizedGPTWithRoPE(nn.Module):
         
         if MAXTEXT_AVAILABLE:
             self.head = dense_general(
-                inputs_shape=(1, 1, self.config.n_embd),
-                out_features_shape=self.config.vocab_size,
+                inputs_shape=(self.config.n_embd,),
+                out_features_shape=(self.config.vocab_size,),
                 axis=-1,
                 kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
                 kernel_axes=("embed", "vocab"),

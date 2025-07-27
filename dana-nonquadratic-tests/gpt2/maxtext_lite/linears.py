@@ -45,9 +45,10 @@ def _compute_dot_general_simple(inputs, kernel, axis, contract_ind, matmul_preci
 
 
 class SimpleDenseGeneral(nn.Module):
-  """Simplified dense general layer without advanced features."""
+  """Simplified dense general layer that matches MaxText behavior."""
   
-  features: Union[Iterable[int], int]
+  in_features_shape: Union[Iterable[int], int]
+  out_features_shape: Union[Iterable[int], int]
   axis: Union[Iterable[int], int] = -1
   dtype: DType = jnp.float32
   weight_dtype: DType = jnp.float32
@@ -58,36 +59,39 @@ class SimpleDenseGeneral(nn.Module):
   
   @nn.compact
   def __call__(self, inputs: Array) -> Array:
-    """Apply dense transformation."""
-    # Normalize inputs
+    """Apply dense transformation matching MaxText's approach."""
     inputs = jnp.asarray(inputs, self.dtype)
-    axis = self.axis
     
-    if isinstance(axis, int):
-      axis = (axis,)
-    axis = _normalize_axes(axis, inputs.ndim)
+    # Canonicalize shapes and axes
+    in_features_shape = _canonicalize_tuple(self.in_features_shape)
+    out_features_shape = _canonicalize_tuple(self.out_features_shape)
+    axis = _canonicalize_tuple(self.axis)
+    norm_axis = _normalize_axes(axis, inputs.ndim)
     
-    if isinstance(self.features, int):
-      features = (self.features,)
-    else:
-      features = tuple(self.features)
+    # Validate input dimensions (like MaxText does)
+    for i, ax in enumerate(norm_axis):
+      if inputs.shape[ax] != in_features_shape[i]:
+        raise ValueError(
+            f"Input dimension {inputs.shape[ax]} at axis {ax} "
+            f"does not match expected input feature size {in_features_shape[i]}"
+        )
     
-    # Compute kernel shape
-    kernel_shape = tuple(inputs.shape[ax] for ax in axis) + features
+    # Create kernel with proper shape (MaxText approach)
+    kernel_shape = in_features_shape + out_features_shape
     kernel = self.param('kernel', self.kernel_init, kernel_shape, self.weight_dtype)
     kernel = jnp.asarray(kernel, self.dtype)
     
-    # Contract over axis dimensions
+    # Contract over input axes
     contract_ind = tuple(range(len(axis)))
     
     # Compute dot product
     y = _compute_dot_general_simple(
-        inputs, kernel, axis, contract_ind, self.matmul_precision
+        inputs, kernel, norm_axis, contract_ind, self.matmul_precision
     )
     
     # Add bias if enabled
     if self.use_bias:
-      bias = self.param('bias', self.bias_init, features, self.weight_dtype)
+      bias = self.param('bias', self.bias_init, out_features_shape, self.weight_dtype)
       bias = jnp.asarray(bias, self.dtype)
       y = y + bias
     
@@ -107,7 +111,19 @@ def dense_general(
     use_bias=True,
     matmul_precision='default',
 ):
-  """Create a dense general layer - simplified version."""
+  """Create a dense general layer - simplified version that matches MaxText."""
+  
+  # Extract input features from inputs_shape
+  if isinstance(inputs_shape, (tuple, list)) and len(inputs_shape) > 0:
+    # Get the feature size from the specified axis
+    if isinstance(axis, int):
+      axis_idx = axis if axis >= 0 else len(inputs_shape) + axis
+      in_features_shape = (inputs_shape[axis_idx],)
+    else:
+      # Multiple axes
+      in_features_shape = tuple(inputs_shape[ax] for ax in axis)
+  else:
+    raise ValueError(f"Invalid inputs_shape: {inputs_shape}")
   
   # Use standard initializer if nd_dense_init is provided
   if kernel_init is None or hasattr(kernel_init, '__name__') and 'nd_dense_init' in str(kernel_init):
@@ -115,7 +131,8 @@ def dense_general(
     kernel_init = nn.initializers.xavier_normal()
   
   return SimpleDenseGeneral(
-      features=out_features_shape,
+      in_features_shape=in_features_shape,
+      out_features_shape=out_features_shape,
       axis=axis,
       dtype=dtype,
       weight_dtype=weight_dtype,
