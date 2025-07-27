@@ -250,33 +250,39 @@ class OptimizedCausalSelfAttention(nn.Module):
             k = partitioning.with_sharding_constraint(k, ('data', None, 'tensor', None))
             v = partitioning.with_sharding_constraint(v, ('data', None, 'tensor', None))
         
-        # Use MaxText's optimized attention if available
+        # Try MaxText's optimized attention first, fall back to manual implementation
+        y = None
         if MAXTEXT_AVAILABLE and self.config.attention_implementation in ['flash', 'splash', 'cudnn_flash_te']:
-            # Create a minimal config for attention_op
-            attention_config = type('Config', (), {
-                'matmul_precision': self.config.matmul_precision,
-                'float32_qk_product': self.config.float32_qk_product,
-                'float32_logits': self.config.float32_logits,
-            })()
-            
-            # Use MaxText's optimized attention operation
-            attention_op = attention_op_as_linen(
-                config=attention_config,
-                mesh=None,  # Will be set by caller if using distributed training
-                attention_kernel=self.config.attention_implementation,
-                max_target_length=self.config.block_size,
-                float32_qk_product=self.config.float32_qk_product,
-                float32_logits=self.config.float32_logits,
-                quant=None,
-                kv_quant=None,
-                num_query_heads=self.config.n_head,
-                num_kv_heads=self.config.n_head,
-                dtype=self.config.compute_dtype,
-            )
-            
-            y = attention_op(q, k, v, None, 'train')  # decoder_segment_ids=None, model_mode='train'
-        else:
-            # Fallback to optimized manual attention implementation
+            try:
+                # Create a minimal config for attention_op
+                attention_config = type('Config', (), {
+                    'matmul_precision': self.config.matmul_precision,
+                    'float32_qk_product': self.config.float32_qk_product,
+                    'float32_logits': self.config.float32_logits,
+                })()
+                
+                # Use MaxText's optimized attention operation
+                attention_op = attention_op_as_linen(
+                    config=attention_config,
+                    mesh=None,  # Will be set by caller if using distributed training
+                    attention_kernel=self.config.attention_implementation,
+                    max_target_length=self.config.block_size,
+                    float32_qk_product=self.config.float32_qk_product,
+                    float32_logits=self.config.float32_logits,
+                    quant=None,
+                    kv_quant=None,
+                    num_query_heads=self.config.n_head,
+                    num_kv_heads=self.config.n_head,
+                    dtype=self.config.compute_dtype,
+                )
+                
+                y = attention_op(q, k, v, None, 'train')  # decoder_segment_ids=None, model_mode='train'
+            except Exception as e:
+                print(f"MaxText attention failed, falling back to manual implementation: {e}")
+                y = None
+        
+        # Fallback to optimized manual attention implementation
+        if y is None:
             scale = jnp.sqrt(self.head_dim).astype(self.config.compute_dtype)
             scale = 1.0 / scale
             
@@ -498,11 +504,13 @@ class OptimizedGPTWithRoPE(nn.Module):
 
 def create_mesh(config: OptimizedModelConfig):
     """Create device mesh for distributed training."""
-    if not MAXTEXT_AVAILABLE:
-        return None
-    
     devices = jax.devices()
     total_devices = len(devices)
+    
+    # For single device, return None to disable sharding
+    if total_devices == 1:
+        print(f"Single device detected, disabling advanced sharding")
+        return None
     
     # Calculate mesh dimensions
     data_size = min(config.data_axis_size, total_devices)
@@ -513,13 +521,21 @@ def create_mesh(config: OptimizedModelConfig):
         data_size = total_devices
         tensor_size = 1
     
-    mesh_shape = (data_size, tensor_size)
-    mesh = jax.sharding.Mesh(
-        devices[:data_size * tensor_size].reshape(mesh_shape),
-        config.mesh_axes
-    )
-    
-    return mesh
+    # Use mesh_utils for proper device array creation
+    try:
+        from jax.experimental import mesh_utils
+        device_mesh = mesh_utils.create_device_mesh((data_size, tensor_size))
+        mesh = jax.sharding.Mesh(device_mesh, config.mesh_axes)
+        return mesh
+    except Exception as e:
+        print(f"Failed to create mesh with mesh_utils, falling back to simple approach: {e}")
+        # Fallback: create simple mesh for data parallelism only
+        if total_devices > 1:
+            device_mesh = mesh_utils.create_device_mesh((total_devices,))
+            mesh = jax.sharding.Mesh(device_mesh, ("data",))
+            return mesh
+        else:
+            return None
 
 
 def count_params(params):
