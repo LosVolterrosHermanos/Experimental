@@ -23,6 +23,14 @@ from flax.training.train_state import TrainState
 from dataclasses import dataclass
 from typing import Optional
 
+# Conditional import for kvax
+try:
+    from kvax.ops import flash_attention, create_attention_mask
+    from kvax.utils import PADDING_SEGMENT_ID
+    KVAX_AVAILABLE = True
+except ImportError:
+    KVAX_AVAILABLE = False
+
 
 @dataclass
 class ModelConfig:
@@ -36,7 +44,7 @@ class ModelConfig:
         n_layer: Number of transformer layers
         dropout_rate: Dropout probability
         rope_base: Base frequency for RoPE (default 10000.0 as in the paper)
-        attention_implementation: Attention implementation to use ('naive', 'xla', 'cudnn')
+        attention_implementation: Attention implementation to use ('naive', 'xla', 'cudnn', 'kvax')
     """
     vocab_size: int = 50304
     n_head: int = 12
@@ -252,7 +260,41 @@ class CausalSelfAttention(nn.Module):
         k = apply_rope(k_f32, self.cos_cache, self.sin_cache).astype(jnp.bfloat16)
 
         # Attention computation
-        if self.config.attention_implementation in ['cudnn', 'xla']:
+        if self.config.attention_implementation == 'kvax':
+            if not KVAX_AVAILABLE:
+                raise ImportError("kvax is not installed. Install with: pip install kvax")
+            
+            # Use kvax flash attention
+            # Create segment IDs and positions for kvax
+            positions = jnp.arange(T)[None, :].repeat(B, axis=0)  # (B, T)
+            segment_ids = jnp.zeros((B, T), dtype=jnp.int32)  # All tokens in same segment
+            
+            # Create attention mask for causal attention
+            attention_mask = create_attention_mask(
+                positions, segment_ids, positions, segment_ids
+            )
+            
+            # Reshape for kvax (expects BNTH format)
+            q_kvax = jnp.transpose(q, (0, 2, 1, 3))  # (B, N, T, H)
+            k_kvax = jnp.transpose(k, (0, 2, 1, 3))  # (B, N, T, H)
+            v_kvax = jnp.transpose(v, (0, 2, 1, 3))  # (B, N, T, H)
+            
+            # Apply kvax flash attention
+            y_kvax = flash_attention(
+                query=q_kvax,
+                key=k_kvax,
+                value=v_kvax,
+                query_positions=positions,
+                query_segment_ids=segment_ids,
+                kv_positions=positions,
+                kv_segment_ids=segment_ids,
+                mask=attention_mask
+            )
+            
+            # Reshape back to BTNH format
+            y = jnp.transpose(y_kvax, (0, 2, 1, 3))  # (B, T, N, H)
+            
+        elif self.config.attention_implementation in ['cudnn', 'xla']:
             # Use jax.nn.dot_product_attention with specified implementation
             # Keep attention computation in bfloat16 and in BTNH format
             y = jax.nn.dot_product_attention(

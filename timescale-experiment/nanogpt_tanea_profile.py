@@ -196,8 +196,8 @@ def parse_args():
     # Attention implementation parameters
     parser.add_argument(
         "--attention_implementation", type=str, default="naive",
-        choices=["naive", "xla", "cudnn"],
-        help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
+        choices=["naive", "xla", "cudnn", "kvax"],
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), cudnn (cuDNN), or kvax (flash attention)"
     )
     # Gradient clipping parameters
     parser.add_argument(
