@@ -33,7 +33,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v4 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 # Import Muon optimizer
@@ -257,7 +257,7 @@ def parse_args():
         help="Sequence length for training"
     )
     parser.add_argument(
-        "--val_batch_size", type=int, default=64,
+        "--val_batch_size", type=int, default=32,
         help="Total validation batch size (will be divided across GPUs)"
     )
     parser.add_argument(
