@@ -279,10 +279,9 @@ class CausalSelfAttention(nn.Module):
                 kv_specs=(None, None, None, None),
             ):
                 # Create attention mask for causal attention
-                # Set calc_bwd_mask=True to get both forward and backward masks
+                # Use default parameters (no calc_bwd_mask for now)
                 attention_mask = create_attention_mask(
-                    positions, segment_ids, positions, segment_ids,
-                    calc_bwd_mask=True
+                    positions, segment_ids, positions, segment_ids
                 )
                 
                 # Apply kvax flash attention with BTNH format
