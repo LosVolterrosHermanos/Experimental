@@ -269,10 +269,8 @@ class CausalSelfAttention(nn.Module):
             positions = jnp.arange(T)[None, :].repeat(B, axis=0)  # (B, T)
             segment_ids = jnp.zeros((B, T), dtype=jnp.int32)  # All tokens in same segment
             
-            # Reshape for kvax (expects BNTH format)
-            q_kvax = jnp.transpose(q, (0, 2, 1, 3))  # (B, N, T, H)
-            k_kvax = jnp.transpose(k, (0, 2, 1, 3))  # (B, N, T, H)
-            v_kvax = jnp.transpose(v, (0, 2, 1, 3))  # (B, N, T, H)
+            # Keep tensors in BTNH format as kvax expects
+            # q, k, v are already in (B, T, N, H) format
             
             # Set attention specs and apply kvax flash attention
             # Use None for all specs to indicate no sharding (single device)
@@ -285,20 +283,17 @@ class CausalSelfAttention(nn.Module):
                     positions, segment_ids, positions, segment_ids
                 )
                 
-                # Apply kvax flash attention
-                y_kvax = flash_attention(
-                    query=q_kvax,
-                    key=k_kvax,
-                    value=v_kvax,
+                # Apply kvax flash attention with BTNH format
+                y = flash_attention(
+                    query=q,
+                    key=k,
+                    value=v,
                     query_positions=positions,
                     query_segment_ids=segment_ids,
                     kv_positions=positions,
                     kv_segment_ids=segment_ids,
                     mask=attention_mask
                 )
-            
-            # Reshape back to BTNH format
-            y = jnp.transpose(y_kvax, (0, 2, 1, 3))  # (B, T, N, H)
             
         elif self.config.attention_implementation in ['cudnn', 'xla']:
             # Use jax.nn.dot_product_attention with specified implementation
