@@ -418,16 +418,19 @@ class MLP(nn.Module):
         return x
 
 
-class TransformerBlock(nn.Module):
-    """Transformer block with pre-norm and residual connections.
+class ScanTransformerBlock(nn.Module):
+    """TransformerBlock designed specifically for nn.scan usage.
     
-    Uses mixed precision mode.
+    Uses mixed precision mode and scan-compatible call signature.
     """
     config: ModelConfig
     init_std: float = 0.02
 
     @nn.compact
-    def __call__(self, x, deterministic=True):
+    def __call__(self, carry, _):
+        """Scan-compatible call signature: (carry, x) -> (carry, y)"""
+        x, deterministic = carry  # Unpack carry
+        
         # Pre-norm architecture - cast to float32 for LayerNorm, then back
         norm_dtype = jnp.float32
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
@@ -445,7 +448,7 @@ class TransformerBlock(nn.Module):
             init_std=self.init_std
         )(x_norm, deterministic=deterministic)
         
-        return x
+        return (x, deterministic), None  # Return (new_carry, output)
 
 
 
@@ -471,7 +474,15 @@ class GPTWithRoPE(nn.Module):
             dtype=param_dtype
         )
         
-        # We'll use scan in the __call__ method to handle deterministic properly
+        # Create scanned transformer blocks in setup()
+        self.transformer_blocks = nn.scan(
+            ScanTransformerBlock,
+            variable_axes={'params': 0},      # Each layer has unique params
+            split_rngs={'params': True},      # Each layer gets unique RNG
+            length=self.config.n_layer,      # Number of layers to scan
+            # For FSDP compatibility:
+            metadata_params={nn.PARTITION_NAME: 'layers'}
+        )(config=self.config, init_std=self.init_std)
         
         # Final layer norm and output projection
         # LayerNorm needs float32 for numerical stability in mixed precision
@@ -486,7 +497,6 @@ class GPTWithRoPE(nn.Module):
 
 
 
-    @nn.compact
     def __call__(self, x, deterministic=False):
         """Forward pass through the GPT model.
         
@@ -504,17 +514,8 @@ class GPTWithRoPE(nn.Module):
         x = self.wte(x)
         assert x.dtype == jnp.bfloat16, f"Embedding output should be bfloat16, got {x.dtype}"
 
-        # Apply transformer blocks using scan
-        def scan_block(carry, _):
-            return TransformerBlock(self.config, init_std=self.init_std)(carry, deterministic), None
-        
-        ScanTransformerBlocks = nn.scan(
-            scan_block,
-            variable_axes={'params': 0},
-            split_rngs={'params': True},
-            length=self.config.n_layer
-        )
-        x, _ = ScanTransformerBlocks(x, None)
+        # Apply scanned transformer blocks
+        (x, _), _ = self.transformer_blocks((x, deterministic), None)
             
         # Final layer norm
         # Cast to float32 for LayerNorm, then back to bfloat16
