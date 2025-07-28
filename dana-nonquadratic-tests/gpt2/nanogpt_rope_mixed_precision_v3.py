@@ -427,18 +427,9 @@ class TransformerBlock(nn.Module):
     init_std: float = 0.02
 
     @nn.compact
-    def __call__(self, carry, _):
-        x, deterministic = carry
-        x = self.block_body(x, deterministic)
-        return (x, deterministic), None
-
-    @nn.compact
-    def block_body(self, x, deterministic: bool):
-        """The actual logic of the transformer block, designed to be checkpointed."""
-        # LayerNorm needs float32 for numerical stability
-        norm_dtype = jnp.float32
-        
+    def __call__(self, x, deterministic=True):
         # Pre-norm architecture - cast to float32 for LayerNorm, then back
+        norm_dtype = jnp.float32
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
             
         x = x + CausalSelfAttention(
@@ -455,6 +446,7 @@ class TransformerBlock(nn.Module):
         )(x_norm, deterministic=deterministic)
         
         return x
+
 
 
 class GPTWithRoPE(nn.Module):
@@ -479,14 +471,7 @@ class GPTWithRoPE(nn.Module):
             dtype=param_dtype
         )
         
-        ScannedTransformerBlock = nn.scan(
-            TransformerBlock,
-            variable_axes={'params': 0},
-            split_rngs={'params': True},
-            length=self.config.n_layer,
-            metadata_params={nn.PARTITION_NAME: 'layers'}
-        )
-        self.blocks = ScannedTransformerBlock(name="ScannedTransformerBlocks", config=self.config, init_std=self.init_std)
+        # We'll use scan in the __call__ method to handle deterministic properly
         
         # Final layer norm and output projection
         # LayerNorm needs float32 for numerical stability in mixed precision
@@ -499,21 +484,6 @@ class GPTWithRoPE(nn.Module):
             dtype=param_dtype
         )
 
-    def scanned_blocks(self, x, deterministic):
-        
-        def block_fn(carry, _):
-            x, deterministic = carry
-            x = TransformerBlock(config=self.config, init_std=self.init_std)(x, deterministic)
-            return (x, deterministic), None
-
-        ScanTransformer = nn.scan(
-            block_fn,
-            variable_axes={'params': 0},
-            split_rngs={'params': True},
-            length=self.config.n_layer
-        )
-        
-        return ScanTransformer(name="ScannedTransformerBlocks")((x, deterministic), None)
 
 
     @nn.compact
@@ -534,8 +504,17 @@ class GPTWithRoPE(nn.Module):
         x = self.wte(x)
         assert x.dtype == jnp.bfloat16, f"Embedding output should be bfloat16, got {x.dtype}"
 
-        # Apply transformer blocks
-        (x, _), _ = self.blocks((x, deterministic), None)
+        # Apply transformer blocks using scan
+        def scan_block(carry, _):
+            return TransformerBlock(self.config, init_std=self.init_std)(carry, deterministic), None
+        
+        ScanTransformerBlocks = nn.scan(
+            scan_block,
+            variable_axes={'params': 0},
+            split_rngs={'params': True},
+            length=self.config.n_layer
+        )
+        x, _ = ScanTransformerBlocks(x, None)
             
         # Final layer norm
         # Cast to float32 for LayerNorm, then back to bfloat16
