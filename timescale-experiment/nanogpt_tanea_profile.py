@@ -101,10 +101,11 @@ def _init_train_state_sharded(config, model, key, mesh):
     return shardings, state
 
 def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: Mesh):
-    """Sharded training step for multi-GPU data parallelism."""
-    # Add sharding constraints for input data
-    x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P("data")))
-    y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P("data")))
+    """Sharded training step for FSDP (feature sharding)."""
+    # For FSDP, we replicate input data across all devices since we're sharding features, not batch
+    # Input data is replicated, not sharded
+    x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None)))
+    y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P(None)))
     
     def loss_fn(params: FrozenDict) -> jnp.ndarray:
         # Use mesh context for kvax compatibility
@@ -248,9 +249,11 @@ def main():
     
     logger.info(f"Total batch size: {args.batch_size}, per-device batch size: {per_device_batch_size}")
     
-    # Create device mesh for data parallelism
+    # Create device mesh for FSDP (feature sharding)
+    # For FSDP, we shard across the feature dimension rather than batch dimension
     mesh = Mesh(mesh_utils.create_device_mesh((jax.device_count(),)), ("data",))
-    logger.info(f"Created device mesh: {mesh}")
+    logger.info(f"Created FSDP device mesh: {mesh}")
+    logger.info("Using FSDP sharding strategy: features sharded across devices")
     
     # Create JIT-compiled train step function with mesh frozen
     train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))

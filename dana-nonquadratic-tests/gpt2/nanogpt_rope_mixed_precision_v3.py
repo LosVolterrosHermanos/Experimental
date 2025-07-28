@@ -209,25 +209,40 @@ class CausalSelfAttention(nn.Module):
         # Parameters stored in bfloat16 for efficiency
         param_dtype = jnp.bfloat16
         
-        # Initialize projection layers
+        # FSDP-aware initialization function for dense layers
+        def fsdp_init_fn(key, shape, dtype=param_dtype):
+            # Xavier uniform initialization
+            init_val = jax.nn.initializers.xavier_uniform()(key, shape, dtype)
+            # Apply FSDP sharding constraint: input features sharded for QKV projections
+            pspec = P("data", None)  # Shard along input dimension
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
+        def fsdp_out_init_fn(key, shape, dtype=param_dtype):
+            # Xavier uniform initialization
+            init_val = jax.nn.initializers.xavier_uniform()(key, shape, dtype)
+            # Apply FSDP sharding constraint: output features sharded for out projection
+            pspec = P(None, "data")  # Shard along output dimension
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
+        # Initialize projection layers with FSDP sharding
         self.q_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_init_fn,
             dtype=param_dtype
         )
         self.k_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_init_fn,
             dtype=param_dtype
         )
         self.v_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_init_fn,
             dtype=param_dtype
         )
         self.out_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_out_init_fn,
             dtype=param_dtype
         )
         
@@ -274,11 +289,11 @@ class CausalSelfAttention(nn.Module):
             # Keep tensors in BTNH format as kvax expects
             # q, k, v are already in (B, T, N, H) format
             
-            # Use kvax flash attention with proper mesh integration
-            # Set attention specs for data parallelism (single device case)
+            # Use kvax flash attention with FSDP sharding
+            # For FSDP: batch and sequence are replicated, features are sharded
             with attention_specs(
-                query_specs=P("data", None, None, None),  # Data parallel across batch
-                kv_specs=P("data", None, None, None),     # Data parallel across batch
+                query_specs=(None, None, "data", None),  # Shard across heads (feature dimension)
+                kv_specs=(None, None, "data", None),     # Shard across heads (feature dimension)
             ):
                 # Create attention mask as required by kvax
                 # Set calc_bwd_mask=True to get all 3 masks needed for backward pass
@@ -351,14 +366,27 @@ class MLP(nn.Module):
         # Parameters stored in bfloat16 for efficiency
         param_dtype = jnp.bfloat16
         
+        # FSDP-aware initialization functions
+        def fsdp_fc1_init_fn(key, shape, dtype=param_dtype):
+            init_val = jax.nn.initializers.xavier_uniform()(key, shape, dtype)
+            # First layer: shard input dimension
+            pspec = P("data", None)  
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
+        def fsdp_fc2_init_fn(key, shape, dtype=param_dtype):
+            init_val = jax.nn.initializers.xavier_uniform()(key, shape, dtype)
+            # Second layer: shard output dimension
+            pspec = P(None, "data")  
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
         self.fc1 = nn.Dense(
             self.config.n_embd * 4,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_fc1_init_fn,
             dtype=param_dtype
         )
         self.fc2 = nn.Dense(
             self.config.n_embd,
-            kernel_init=nn.initializers.normal(stddev=self.init_std),
+            kernel_init=fsdp_fc2_init_fn,
             dtype=param_dtype
         )
 
@@ -426,10 +454,20 @@ class GPTWithRoPE(nn.Module):
         # Parameters stored in bfloat16 for efficiency
         param_dtype = jnp.bfloat16
         
+        # FSDP-aware embedding initialization
+        def fsdp_embed_init_fn(key, shape, dtype=param_dtype):
+            init_val = jax.nn.initializers.variance_scaling(
+                1.0, 'fan_in', 'normal', out_axis=0
+            )(key, shape, dtype)
+            # Embedding: shard along feature dimension
+            pspec = P(None, "data")  
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
         # Token embeddings (no positional embeddings - RoPE handles positions)
         self.wte = nn.Embed(
             self.config.vocab_size, 
             self.config.n_embd, 
+            embedding_init=fsdp_embed_init_fn,
             dtype=param_dtype
         )
         
@@ -437,9 +475,17 @@ class GPTWithRoPE(nn.Module):
         # LayerNorm needs float32 for numerical stability in mixed precision
         norm_dtype = jnp.float32
         self.ln_f = nn.LayerNorm(dtype=norm_dtype)
+        
+        # FSDP-aware head initialization
+        def fsdp_head_init_fn(key, shape, dtype=param_dtype):
+            init_val = jax.nn.initializers.normal(stddev=self.init_std * 0.5)(key, shape, dtype)
+            # Head: shard along input dimension
+            pspec = P("data", None)  
+            return jax.lax.with_sharding_constraint(init_val, pspec)
+        
         self.head = nn.Dense(
             self.config.vocab_size,
-            kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
+            kernel_init=fsdp_head_init_fn,
             dtype=param_dtype
         )
 
