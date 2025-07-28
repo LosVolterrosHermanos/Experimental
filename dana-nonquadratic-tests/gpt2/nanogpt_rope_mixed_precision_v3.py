@@ -269,7 +269,7 @@ class CausalSelfAttention(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, x, deterministic=True):
+    def __call__(self, x, deterministic: bool):
         assert len(x.shape) == 3
         B, T, C = x.shape  # batch size, sequence length, embedding dimensionality
 
@@ -406,7 +406,7 @@ class MLP(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, x, deterministic=True):
+    def __call__(self, x, deterministic: bool):
         # Mixed precision: keep computations in bfloat16
         #x = x.astype(jnp.bfloat16)
         x = self.fc1(x)
@@ -428,12 +428,10 @@ class TransformerBlock(nn.Module):
 
     @nn.checkpoint  # Add gradient checkpointing to save memory
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, carry, _):
+        x, deterministic = carry
         # LayerNorm needs float32 for numerical stability
         norm_dtype = jnp.float32
-        
-        # Ensure input is in bfloat16
-        #x = x.astype(jnp.bfloat16)
         
         # Pre-norm architecture - cast to float32 for LayerNorm, then back
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
@@ -441,7 +439,7 @@ class TransformerBlock(nn.Module):
         x = x + CausalSelfAttention(
             self.config, 
             init_std=self.init_std
-        )(x_norm)
+        )(x_norm, deterministic=deterministic)
         
         # Second LayerNorm
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
@@ -449,9 +447,9 @@ class TransformerBlock(nn.Module):
         x = x + MLP(
             self.config, 
             init_std=self.init_std
-        )(x_norm)
+        )(x_norm, deterministic=deterministic)
         
-        return x
+        return (x, deterministic), None
 
 
 class GPTWithRoPE(nn.Module):
@@ -476,6 +474,15 @@ class GPTWithRoPE(nn.Module):
             dtype=param_dtype
         )
         
+        ScannedTransformerBlock = nn.scan(
+            TransformerBlock,
+            variable_axes={'params': 0},
+            split_rngs={'params': True},
+            length=self.config.n_layer,
+            metadata_params={nn.PARTITION_NAME: 'layers'}
+        )
+        self.blocks = ScannedTransformerBlock(name="ScannedTransformerBlocks", config=self.config, init_std=self.init_std)
+        
         # Final layer norm and output projection
         # LayerNorm needs float32 for numerical stability in mixed precision
         norm_dtype = jnp.float32
@@ -486,6 +493,23 @@ class GPTWithRoPE(nn.Module):
             kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
             dtype=param_dtype
         )
+
+    def scanned_blocks(self, x, deterministic):
+        
+        def block_fn(carry, _):
+            x, deterministic = carry
+            x = TransformerBlock(config=self.config, init_std=self.init_std)(x, deterministic)
+            return (x, deterministic), None
+
+        ScanTransformer = nn.scan(
+            block_fn,
+            variable_axes={'params': 0},
+            split_rngs={'params': True},
+            length=self.config.n_layer
+        )
+        
+        return ScanTransformer(name="ScannedTransformerBlocks")((x, deterministic), None)
+
 
     @nn.compact
     def __call__(self, x, deterministic=False):
@@ -505,19 +529,8 @@ class GPTWithRoPE(nn.Module):
         x = self.wte(x)
         assert x.dtype == jnp.bfloat16, f"Embedding output should be bfloat16, got {x.dtype}"
 
-        # Apply transformer blocks using nn.scan for memory efficiency
-        def scanned_transformer_block(carry, _):
-            x = carry
-            x = TransformerBlock(self.config, init_std=self.init_std)(x)
-            return x, None
-        
-        ScanTransformerBlock = nn.scan(
-            scanned_transformer_block,
-            variable_axes={'params': 0},
-            split_rngs={'params': True},
-            length=self.config.n_layer
-        )
-        x, _ = ScanTransformerBlock(x, None)
+        # Apply transformer blocks
+        (x, _), _ = self.blocks((x, deterministic), None)
             
         # Final layer norm
         # Cast to float32 for LayerNorm, then back to bfloat16
