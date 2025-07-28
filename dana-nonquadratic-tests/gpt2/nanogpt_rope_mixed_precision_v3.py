@@ -27,6 +27,7 @@ from typing import Optional
 try:
     from kvax.ops import flash_attention, create_attention_mask
     from kvax.utils import PADDING_SEGMENT_ID, attention_specs
+    from kvax.utils.common import FlashAttentionParamsConfig, get_default_flash_attention_params
     KVAX_AVAILABLE = True
 except ImportError:
     KVAX_AVAILABLE = False
@@ -280,12 +281,14 @@ class CausalSelfAttention(nn.Module):
             ):
                 # Create attention mask as required by kvax
                 # Set calc_bwd_mask=True to get all 3 masks needed for backward pass
-                # Provide empty dicts for fwd_params and bwd_params to use defaults
+                # Use proper configuration objects instead of empty dicts
+                fwd_params = get_default_flash_attention_params()
+                bwd_params = get_default_flash_attention_params()
                 attention_mask = create_attention_mask(
                     positions, segment_ids, positions, segment_ids,
                     calc_bwd_mask=True,
-                    fwd_params={},
-                    bwd_params={}
+                    fwd_params=fwd_params,
+                    bwd_params=bwd_params
                 )
                 
                 # Apply kvax flash attention with BTNH format
