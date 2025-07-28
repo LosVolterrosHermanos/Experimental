@@ -107,7 +107,9 @@ def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: 
     y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P("data")))
     
     def loss_fn(params: FrozenDict) -> jnp.ndarray:
-        logits = state.apply_fn(params, x, False)
+        # Use mesh context for kvax compatibility
+        with mesh:
+            logits = state.apply_fn(params, x, False)
         # Loss computation in float32
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
         return loss
