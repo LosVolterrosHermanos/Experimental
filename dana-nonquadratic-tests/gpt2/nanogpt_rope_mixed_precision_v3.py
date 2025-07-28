@@ -275,9 +275,10 @@ class CausalSelfAttention(nn.Module):
             v_kvax = jnp.transpose(v, (0, 2, 1, 3))  # (B, N, T, H)
             
             # Set attention specs and apply kvax flash attention
+            # Use None for all specs to indicate no sharding (single device)
             with attention_specs(
-                query_specs=("data", None, None, None),  # No sharding for single GPU
-                kv_specs=("data", None, None, None),
+                query_specs=(None, None, None, None),
+                kv_specs=(None, None, None, None),
             ):
                 # Create attention mask for causal attention
                 attention_mask = create_attention_mask(
