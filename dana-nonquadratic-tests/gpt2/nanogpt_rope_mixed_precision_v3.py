@@ -264,7 +264,7 @@ class CausalSelfAttention(nn.Module):
             if not KVAX_AVAILABLE:
                 raise ImportError("kvax is not installed. Install with: pip install kvax")
             
-            # Use kvax flash attention with proper attention specs
+            # Use kvax flash attention following the official How to Use guide
             # Create segment IDs and positions for kvax
             positions = jnp.arange(T)[None, :].repeat(B, axis=0)  # (B, T)
             segment_ids = jnp.zeros((B, T), dtype=jnp.int32)  # All tokens in same segment
@@ -278,8 +278,16 @@ class CausalSelfAttention(nn.Module):
                 query_specs=(None, None, None, None),
                 kv_specs=(None, None, None, None),
             ):
+                # Create attention mask as required by kvax
+                attention_mask = create_attention_mask(
+                    positions, segment_ids, positions, segment_ids
+                )
+                
+                # Ensure mask is a tuple for backward pass compatibility
+                if not isinstance(attention_mask, tuple):
+                    attention_mask = (attention_mask, attention_mask)
+                
                 # Apply kvax flash attention with BTNH format
-                # Try without custom mask first - kvax may handle causal attention internally
                 y = flash_attention(
                     query=q,
                     key=k,
@@ -288,7 +296,7 @@ class CausalSelfAttention(nn.Module):
                     query_segment_ids=segment_ids,
                     kv_positions=positions,
                     kv_segment_ids=segment_ids,
-                    mask=None  # Let kvax handle causal masking
+                    mask=attention_mask
                 )
             
         elif self.config.attention_implementation in ['cudnn', 'xla']:
