@@ -278,13 +278,8 @@ class CausalSelfAttention(nn.Module):
                 query_specs=(None, None, None, None),
                 kv_specs=(None, None, None, None),
             ):
-                # Create attention mask for causal attention
-                # Use default parameters (no calc_bwd_mask for now)
-                attention_mask = create_attention_mask(
-                    positions, segment_ids, positions, segment_ids
-                )
-                
                 # Apply kvax flash attention with BTNH format
+                # Try without custom mask first - kvax may handle causal attention internally
                 y = flash_attention(
                     query=q,
                     key=k,
@@ -293,7 +288,7 @@ class CausalSelfAttention(nn.Module):
                     query_segment_ids=segment_ids,
                     kv_positions=positions,
                     kv_segment_ids=segment_ids,
-                    mask=attention_mask
+                    mask=None  # Let kvax handle causal masking
                 )
             
         elif self.config.attention_implementation in ['cudnn', 'xla']:
