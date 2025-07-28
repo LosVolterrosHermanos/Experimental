@@ -432,7 +432,6 @@ class TransformerBlock(nn.Module):
         x = self.block_body(x, deterministic)
         return (x, deterministic), None
 
-    @nn.checkpoint(static_argnums=(2,))  # Use remat and specify deterministic is a static argument
     @nn.compact
     def block_body(self, x, deterministic: bool):
         """The actual logic of the transformer block, designed to be checkpointed."""
