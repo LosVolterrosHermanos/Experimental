@@ -16,9 +16,6 @@ import functools
 from typing import Dict, List, Any
 from tqdm import tqdm
 
-# Set environment variable to fix kvax Triton compilation issues
-os.environ["TRITON_ALLOW_NON_CONSTEXPR_GLOBALS"] = "1"
-
 # Import from the gpt2 directory
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
@@ -54,28 +51,12 @@ logger = logging.getLogger(__name__)
 
 
 
-def create_fsdp_sharding_rules(mesh):
-    """Create FSDP sharding rules for different parameter types."""
-    # FSDP sharding rules: shard parameters across feature dimension
-    sharding_rules = [
-        # Embeddings: shard along embedding dimension
-        ("embed", NamedSharding(mesh, P(None, "data"))),
-        # Dense input layers: shard along input dimension  
-        ("Dense_0/kernel", NamedSharding(mesh, P("data", None))),
-        # Dense output layers: shard along output dimension
-        ("Dense_1/kernel", NamedSharding(mesh, P(None, "data"))),
-        # Default sharding for other parameters
-        (".*", NamedSharding(mesh, P())),  # Replicated
-    ]
-    return sharding_rules
-
 def _init_train_state_sharded(config, model, key, mesh):
-    """Creates a sharded training state for FSDP training."""
+    """Creates a sharded training state for multi-GPU training."""
     inputs = jax.ShapeDtypeStruct(shape=(1, config["seq_len"]), dtype=jnp.int32)
     
     def init(rng, inputs):
-        with mesh:  # Initialize within mesh context for FSDP
-            params = model.init(rng)
+        params = model.init(rng)
         
         # Initialize Tanea optimizer
         g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
@@ -114,26 +95,19 @@ def _init_train_state_sharded(config, model, key, mesh):
             params=params,
             tx=optimizer)
     
-    # Get parameter shapes and create FSDP sharding
     params_shape = jax.eval_shape(init, key, inputs)
     shardings = nn.get_sharding(params_shape, mesh)
-    
-    # Apply FSDP sharding to specific parameters
-    # For now, use default Flax sharding which should work with kvax
     state = jax.jit(init, out_shardings=shardings)(key, inputs)
     return shardings, state
 
 def train_step_sharded(state: TrainState, x: jnp.ndarray, y: jnp.ndarray, mesh: Mesh):
-    """Sharded training step for FSDP (feature sharding)."""
-    # For FSDP, we replicate input data across all devices since we're sharding features, not batch
-    # Input data is replicated, not sharded
-    x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None)))
-    y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P(None)))
+    """Sharded training step for multi-GPU data parallelism."""
+    # Add sharding constraints for input data
+    x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P("data")))
+    y = jax.lax.with_sharding_constraint(y, NamedSharding(mesh, P("data")))
     
     def loss_fn(params: FrozenDict) -> jnp.ndarray:
-        # Use mesh context for kvax compatibility
-        with mesh:
-            logits = state.apply_fn(params, x, False)
+        logits = state.apply_fn(params, x, False)
         # Loss computation in float32
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
         return loss
@@ -222,8 +196,8 @@ def parse_args():
     # Attention implementation parameters
     parser.add_argument(
         "--attention_implementation", type=str, default="naive",
-        choices=["naive", "xla", "cudnn", "kvax", "triton"],
-        help="Attention implementation to use: naive (manual), xla (JAX XLA), cudnn (cuDNN), kvax (flash attention), or triton (jax-flash-attn2 TRITON)"
+        choices=["naive", "xla", "cudnn"],
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
     )
     # Gradient clipping parameters
     parser.add_argument(
@@ -272,11 +246,9 @@ def main():
     
     logger.info(f"Total batch size: {args.batch_size}, per-device batch size: {per_device_batch_size}")
     
-    # Create device mesh for FSDP (feature sharding)
-    # For FSDP, we shard across the feature dimension rather than batch dimension
+    # Create device mesh for data parallelism
     mesh = Mesh(mesh_utils.create_device_mesh((jax.device_count(),)), ("data",))
-    logger.info(f"Created FSDP device mesh: {mesh}")
-    logger.info("Using FSDP sharding strategy: features sharded across devices")
+    logger.info(f"Created device mesh: {mesh}")
     
     # Create JIT-compiled train step function with mesh frozen
     train_step_fn = jax.jit(functools.partial(train_step_sharded, mesh=mesh))

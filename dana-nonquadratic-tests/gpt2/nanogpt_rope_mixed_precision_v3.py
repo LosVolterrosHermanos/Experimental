@@ -20,25 +20,8 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
-from jax.sharding import PartitionSpec as P
 from dataclasses import dataclass
 from typing import Optional
-
-# Conditional import for kvax
-try:
-    from kvax.ops import flash_attention, create_attention_mask
-    from kvax.utils import PADDING_SEGMENT_ID, attention_specs
-    from kvax.utils.common import FlashAttentionParamsConfig, get_default_flash_attention_params
-    KVAX_AVAILABLE = True
-except ImportError:
-    KVAX_AVAILABLE = False
-
-# Conditional import for jax-flash-attn2
-try:
-    import jax_flash_attn2 as jfa
-    JAX_FLASH_ATTN2_AVAILABLE = True
-except ImportError:
-    JAX_FLASH_ATTN2_AVAILABLE = False
 
 
 @dataclass
@@ -53,7 +36,7 @@ class ModelConfig:
         n_layer: Number of transformer layers
         dropout_rate: Dropout probability
         rope_base: Base frequency for RoPE (default 10000.0 as in the paper)
-        attention_implementation: Attention implementation to use ('naive', 'xla', 'cudnn', 'kvax', 'triton')
+        attention_implementation: Attention implementation to use ('naive', 'xla', 'cudnn')
     """
     vocab_size: int = 50304
     n_head: int = 12
@@ -204,26 +187,6 @@ def apply_rope(x, cos_cache, sin_cache):
     return out
 
 
-# JAX-Flash-Attn2 implementation
-if JAX_FLASH_ATTN2_AVAILABLE:
-    # Create flash attention instance with TRITON platform
-    _flash_attention = jfa.FlashAttention(
-        jfa.AttentionConfig(
-            platform=jfa.Platform.TRITON,
-            backend=jfa.Backend.GPU
-        )
-    )
-
-    def triton_flash_attention(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-        """JAX-Flash-Attn2 TRITON implementation."""
-        return _flash_attention(
-            query=q,
-            key=k,
-            value=v,
-            causal=True
-        )
-
-
 class CausalSelfAttention(nn.Module):
     """Causal self-attention with RoPE position embeddings.
     
@@ -236,29 +199,25 @@ class CausalSelfAttention(nn.Module):
         # Parameters stored in bfloat16 for efficiency
         param_dtype = jnp.bfloat16
         
-        # Standard initialization - sharding will be handled by Flax's get_sharding
-        def standard_init_fn(key, shape, dtype=param_dtype):
-            return jax.nn.initializers.xavier_uniform()(key, shape, dtype)
-        
-        # Initialize projection layers 
+        # Initialize projection layers
         self.q_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
         self.k_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
         self.v_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
         self.out_proj = nn.Dense(
             self.config.n_embd,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
         
@@ -269,7 +228,7 @@ class CausalSelfAttention(nn.Module):
         )
 
     @nn.compact
-    def __call__(self, x, deterministic: bool):
+    def __call__(self, x, deterministic=True):
         assert len(x.shape) == 3
         B, T, C = x.shape  # batch size, sequence length, embedding dimensionality
 
@@ -293,57 +252,7 @@ class CausalSelfAttention(nn.Module):
         k = apply_rope(k_f32, self.cos_cache, self.sin_cache).astype(jnp.bfloat16)
 
         # Attention computation
-        if self.config.attention_implementation == 'kvax':
-            if not KVAX_AVAILABLE:
-                raise ImportError("kvax is not installed. Install with: pip install kvax")
-            
-            # Use kvax flash attention following the official How to Use guide
-            # Create segment IDs and positions for kvax
-            positions = jnp.arange(T)[None, :].repeat(B, axis=0)  # (B, T)
-            segment_ids = jnp.zeros((B, T), dtype=jnp.int32)  # All tokens in same segment
-            
-            # Keep tensors in BTNH format as kvax expects
-            # q, k, v are already in (B, T, N, H) format
-            
-            # Use kvax flash attention with FSDP sharding
-            # For FSDP: batch and sequence are replicated, features are sharded
-            with attention_specs(
-                query_specs=(None, None, "data", None),  # Shard across heads (feature dimension)
-                kv_specs=(None, None, "data", None),     # Shard across heads (feature dimension)
-            ):
-                # Create attention mask as required by kvax
-                # Set calc_bwd_mask=True to get all 3 masks needed for backward pass
-                # Use proper configuration objects with backward argument
-                fwd_params = get_default_flash_attention_params(backward=False)
-                bwd_params = get_default_flash_attention_params(backward=True)
-                attention_mask = create_attention_mask(
-                    positions, segment_ids, positions, segment_ids,
-                    calc_bwd_mask=True,
-                    fwd_params=fwd_params,
-                    bwd_params=bwd_params
-                )
-                
-                # Apply kvax flash attention with BTNH format
-                y = flash_attention(
-                    query=q,
-                    key=k,
-                    value=v,
-                    query_positions=positions,
-                    query_segment_ids=segment_ids,
-                    kv_positions=positions,
-                    kv_segment_ids=segment_ids,
-                    mask=attention_mask
-                )
-        
-        elif self.config.attention_implementation == 'triton':
-            if not JAX_FLASH_ATTN2_AVAILABLE:
-                raise ImportError("jax-flash-attn2 is not installed. Install with: pip install jax-flash-attn2")
-            
-            # Use JAX-Flash-Attn2 TRITON flash attention
-            # Keep tensors in BTNH format as jax-flash-attn2 expects
-            y = triton_flash_attention(q, k, v)
-            
-        elif self.config.attention_implementation in ['cudnn', 'xla']:
+        if self.config.attention_implementation in ['cudnn', 'xla']:
             # Use jax.nn.dot_product_attention with specified implementation
             # Keep attention computation in bfloat16 and in BTNH format
             y = jax.nn.dot_product_attention(
@@ -390,23 +299,19 @@ class MLP(nn.Module):
         # Parameters stored in bfloat16 for efficiency
         param_dtype = jnp.bfloat16
         
-        # Standard initialization - sharding handled by Flax
-        def standard_init_fn(key, shape, dtype=param_dtype):
-            return jax.nn.initializers.xavier_uniform()(key, shape, dtype)
-        
         self.fc1 = nn.Dense(
             self.config.n_embd * 4,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
         self.fc2 = nn.Dense(
             self.config.n_embd,
-            kernel_init=standard_init_fn,
+            kernel_init=nn.initializers.normal(stddev=self.init_std),
             dtype=param_dtype
         )
 
     @nn.compact
-    def __call__(self, x, deterministic: bool):
+    def __call__(self, x, deterministic=True):
         # Mixed precision: keep computations in bfloat16
         #x = x.astype(jnp.bfloat16)
         x = self.fc1(x)
@@ -418,27 +323,30 @@ class MLP(nn.Module):
         return x
 
 
-class ScanTransformerBlock(nn.Module):
-    """TransformerBlock designed specifically for nn.scan usage.
+class TransformerBlock(nn.Module):
+    """Transformer block with pre-norm and residual connections.
     
-    Uses mixed precision mode and scan-compatible call signature.
+    Uses mixed precision mode.
     """
     config: ModelConfig
     init_std: float = 0.02
 
+    @nn.checkpoint  # Add gradient checkpointing to save memory
     @nn.compact
-    def __call__(self, carry, _):
-        """Scan-compatible call signature: (carry, x) -> (carry, y)"""
-        x, deterministic = carry  # Unpack carry
+    def __call__(self, x):
+        # LayerNorm needs float32 for numerical stability
+        norm_dtype = jnp.float32
+        
+        # Ensure input is in bfloat16
+        #x = x.astype(jnp.bfloat16)
         
         # Pre-norm architecture - cast to float32 for LayerNorm, then back
-        norm_dtype = jnp.float32
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
             
         x = x + CausalSelfAttention(
             self.config, 
             init_std=self.init_std
-        )(x_norm, deterministic=deterministic)
+        )(x_norm)
         
         # Second LayerNorm
         x_norm = nn.LayerNorm(dtype=norm_dtype)(x.astype(jnp.float32)).astype(jnp.bfloat16)
@@ -446,10 +354,9 @@ class ScanTransformerBlock(nn.Module):
         x = x + MLP(
             self.config, 
             init_std=self.init_std
-        )(x_norm, deterministic=deterministic)
+        )(x_norm)
         
-        return (x, deterministic), None  # Return (new_carry, output)
-
+        return x
 
 
 class GPTWithRoPE(nn.Module):
@@ -474,29 +381,17 @@ class GPTWithRoPE(nn.Module):
             dtype=param_dtype
         )
         
-        # Create scanned transformer blocks in setup()
-        self.transformer_blocks = nn.scan(
-            ScanTransformerBlock,
-            variable_axes={'params': 0},      # Each layer has unique params
-            split_rngs={'params': True},      # Each layer gets unique RNG
-            length=self.config.n_layer,      # Number of layers to scan
-            # For FSDP compatibility:
-            metadata_params={nn.PARTITION_NAME: 'layers'}
-        )(config=self.config, init_std=self.init_std)
-        
         # Final layer norm and output projection
         # LayerNorm needs float32 for numerical stability in mixed precision
         norm_dtype = jnp.float32
         self.ln_f = nn.LayerNorm(dtype=norm_dtype)
-        
         self.head = nn.Dense(
             self.config.vocab_size,
             kernel_init=nn.initializers.normal(stddev=self.init_std * 0.5),
             dtype=param_dtype
         )
 
-
-
+    @nn.compact
     def __call__(self, x, deterministic=False):
         """Forward pass through the GPT model.
         
@@ -514,8 +409,12 @@ class GPTWithRoPE(nn.Module):
         x = self.wte(x)
         assert x.dtype == jnp.bfloat16, f"Embedding output should be bfloat16, got {x.dtype}"
 
-        # Apply scanned transformer blocks
-        (x, _), _ = self.transformer_blocks((x, deterministic), None)
+        # Apply transformer blocks
+        for _ in range(self.config.n_layer):
+            x = TransformerBlock(
+                self.config, 
+                init_std=self.init_std
+            )(x)
             
         # Final layer norm
         # Cast to float32 for LayerNorm, then back to bfloat16
