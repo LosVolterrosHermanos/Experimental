@@ -281,11 +281,11 @@ class CausalSelfAttention(nn.Module):
                 )
             if not PALLAS_AVAILABLE:
                 # Fallback to math implementation if Pallas not available
-                scale = 1.0 / jnp.sqrt(head_dim)
+                scale = head_dim ** -0.5
                 y = math_attention_fallback(q, k, v, scale=scale, is_causal=True)
             else:
                 # Use Pallas-based attention
-                scale = 1.0 / jnp.sqrt(head_dim)
+                scale = head_dim ** -0.5
                 y = flax_attention_pallas(q, k, v, scale=scale, is_causal=True)
         else:
             # Fallback to einsum implementation (no transposes needed)
