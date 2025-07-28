@@ -426,10 +426,16 @@ class TransformerBlock(nn.Module):
     config: ModelConfig
     init_std: float = 0.02
 
-    @nn.checkpoint  # Add gradient checkpointing to save memory
     @nn.compact
     def __call__(self, carry, _):
         x, deterministic = carry
+        x = self.block_body(x, deterministic)
+        return (x, deterministic), None
+
+    @nn.checkpoint(static_argnums=(2,))  # Use remat and specify deterministic is a static argument
+    @nn.compact
+    def block_body(self, x, deterministic: bool):
+        """The actual logic of the transformer block, designed to be checkpointed."""
         # LayerNorm needs float32 for numerical stability
         norm_dtype = jnp.float32
         
@@ -449,7 +455,7 @@ class TransformerBlock(nn.Module):
             init_std=self.init_std
         )(x_norm, deterministic=deterministic)
         
-        return (x, deterministic), None
+        return x
 
 
 class GPTWithRoPE(nn.Module):
