@@ -20,7 +20,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
 from nanogpt_minimal import count_params
-from nanogpt_rope_mixed_precision_v3 import GPTWithRoPE, ModelConfig, get_model_config
+from nanogpt_rope_mixed_precision_v5 import GPTWithRoPE, ModelConfig, get_model_config
 from fineweb_dataset import FineWebDataset, create_fineweb_datasets
 
 import jax
@@ -70,11 +70,11 @@ def _init_train_state_sharded(config, model, key, mesh):
         # Create optimizer chain with optional WSD schedule
         if config["enable_wsd"]:
             # Create WSD (Warmup-Stable-Decay) schedule
-            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 0.0:
+            if config["warmup_fraction"] == 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : 1.0
-            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] > 0.0:
+            elif config["warmup_fraction"] == 0.0 and config["decay_fraction"] > 1.0:
                 wsd_schedule = lambda t : jnp.minimum( (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"]),1.0)
-            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 0.0:
+            elif config["warmup_fraction"] > 0.0 and config["decay_fraction"] == 1.0:
                 wsd_schedule = lambda t : jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]),1.0)
             else:
                 wsd_schedule = lambda t : jnp.minimum(jnp.minimum( t/(config["train_steps"]*config["warmup_fraction"]), (1.0 - (t/(config["train_steps"])))/(1.0 - config["decay_fraction"])),1.0)
@@ -196,8 +196,8 @@ def parse_args():
     # Attention implementation parameters
     parser.add_argument(
         "--attention_implementation", type=str, default="naive",
-        choices=["naive", "xla", "cudnn"],
-        help="Attention implementation to use: naive (manual), xla (JAX XLA), or cudnn (cuDNN)"
+        choices=["naive", "xla", "cudnn", "fa-pallas"],
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), cudnn (cuDNN), or fa-pallas (FlaxAttention Pallas)"
     )
     # Gradient clipping parameters
     parser.add_argument(
