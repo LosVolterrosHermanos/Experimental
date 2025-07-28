@@ -26,7 +26,7 @@ from typing import Optional
 # Conditional import for kvax
 try:
     from kvax.ops import flash_attention, create_attention_mask
-    from kvax.utils import PADDING_SEGMENT_ID
+    from kvax.utils import PADDING_SEGMENT_ID, attention_specs
     KVAX_AVAILABLE = True
 except ImportError:
     KVAX_AVAILABLE = False
@@ -264,32 +264,37 @@ class CausalSelfAttention(nn.Module):
             if not KVAX_AVAILABLE:
                 raise ImportError("kvax is not installed. Install with: pip install kvax")
             
-            # Use kvax flash attention
+            # Use kvax flash attention with proper attention specs
             # Create segment IDs and positions for kvax
             positions = jnp.arange(T)[None, :].repeat(B, axis=0)  # (B, T)
             segment_ids = jnp.zeros((B, T), dtype=jnp.int32)  # All tokens in same segment
-            
-            # Create attention mask for causal attention
-            attention_mask = create_attention_mask(
-                positions, segment_ids, positions, segment_ids
-            )
             
             # Reshape for kvax (expects BNTH format)
             q_kvax = jnp.transpose(q, (0, 2, 1, 3))  # (B, N, T, H)
             k_kvax = jnp.transpose(k, (0, 2, 1, 3))  # (B, N, T, H)
             v_kvax = jnp.transpose(v, (0, 2, 1, 3))  # (B, N, T, H)
             
-            # Apply kvax flash attention
-            y_kvax = flash_attention(
-                query=q_kvax,
-                key=k_kvax,
-                value=v_kvax,
-                query_positions=positions,
-                query_segment_ids=segment_ids,
-                kv_positions=positions,
-                kv_segment_ids=segment_ids,
-                mask=attention_mask
-            )
+            # Set attention specs and apply kvax flash attention
+            with attention_specs(
+                query_specs=("data", None, None, None),  # No sharding for single GPU
+                kv_specs=("data", None, None, None),
+            ):
+                # Create attention mask for causal attention
+                attention_mask = create_attention_mask(
+                    positions, segment_ids, positions, segment_ids
+                )
+                
+                # Apply kvax flash attention
+                y_kvax = flash_attention(
+                    query=q_kvax,
+                    key=k_kvax,
+                    value=v_kvax,
+                    query_positions=positions,
+                    query_segment_ids=segment_ids,
+                    kv_positions=positions,
+                    kv_segment_ids=segment_ids,
+                    mask=attention_mask
+                )
             
             # Reshape back to BTNH format
             y = jnp.transpose(y_kvax, (0, 2, 1, 3))  # (B, T, N, H)
