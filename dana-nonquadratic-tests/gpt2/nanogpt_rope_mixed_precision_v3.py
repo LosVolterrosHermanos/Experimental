@@ -279,13 +279,14 @@ class CausalSelfAttention(nn.Module):
                 kv_specs=(None, None, None, None),
             ):
                 # Create attention mask as required by kvax
+                # Set calc_bwd_mask=True to get all 3 masks needed for backward pass
+                # Provide empty dicts for fwd_params and bwd_params to use defaults
                 attention_mask = create_attention_mask(
-                    positions, segment_ids, positions, segment_ids
+                    positions, segment_ids, positions, segment_ids,
+                    calc_bwd_mask=True,
+                    fwd_params={},
+                    bwd_params={}
                 )
-                
-                # Ensure mask is a tuple for backward pass compatibility
-                if not isinstance(attention_mask, tuple):
-                    attention_mask = (attention_mask, attention_mask)
                 
                 # Apply kvax flash attention with BTNH format
                 y = flash_attention(
