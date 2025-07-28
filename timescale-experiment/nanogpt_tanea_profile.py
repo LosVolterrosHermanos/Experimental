@@ -16,6 +16,9 @@ import functools
 from typing import Dict, List, Any
 from tqdm import tqdm
 
+# Set environment variable to fix kvax Triton compilation issues
+os.environ["TRITON_ALLOW_NON_CONSTEXPR_GLOBALS"] = "1"
+
 # Import from the gpt2 directory
 import sys
 sys.path.append('../dana-nonquadratic-tests/gpt2')
