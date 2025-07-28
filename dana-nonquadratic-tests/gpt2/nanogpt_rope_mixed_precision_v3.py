@@ -33,15 +33,12 @@ try:
 except ImportError:
     KVAX_AVAILABLE = False
 
-# Conditional import for jax-triton
+# Conditional import for jax-flash-attn2
 try:
-    import jax_triton as jt
-    import triton
-    import triton.language as tl
-    import functools
-    JAX_TRITON_AVAILABLE = True
+    import jax_flash_attn2 as jfa
+    JAX_FLASH_ATTN2_AVAILABLE = True
 except ImportError:
-    JAX_TRITON_AVAILABLE = False
+    JAX_FLASH_ATTN2_AVAILABLE = False
 
 
 @dataclass
@@ -207,112 +204,24 @@ def apply_rope(x, cos_cache, sin_cache):
     return out
 
 
-# JAX-Triton flash attention implementation
-if JAX_TRITON_AVAILABLE:
-    @triton.jit
-    def fused_attention_kernel(
-        Q, K, V,
-        stride_qz, stride_qh, stride_qm, stride_qk,
-        stride_kz, stride_kh, stride_kn, stride_kk,
-        stride_vz, stride_vh, stride_vk, stride_vn,
-        stride_oz, stride_oh, stride_om, stride_on,
-        Z, H, N_CTX,
-        L, M,
-        Out,
-        BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-    ):
-        start_m = tl.program_id(0)
-        off_hz = tl.program_id(1)
-        # initialize offsets
-        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-        offs_n = tl.arange(0, BLOCK_N)
-        offs_d = tl.arange(0, BLOCK_DMODEL)
-        off_q = off_hz * stride_qh + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk
-        off_k = off_hz * stride_qh + offs_n[None, :] * stride_kn + offs_d[:, None] * stride_kk
-        off_v = off_hz * stride_qh + offs_n[:, None] * stride_qm + offs_d[None, :] * stride_qk
-        # Initialize pointers to Q, K, V
-        q_ptrs = Q + off_q
-        k_ptrs = K + off_k
-        v_ptrs = V + off_v
-        # initialize pointer to m and l
-        m_prev = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
-        l_prev = tl.zeros([BLOCK_M], dtype=tl.float32)
-        acc = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
-        # load q: it will stay in SRAM throughout
-        q = tl.load(q_ptrs)
-        # loop over k, v and update accumulator
-        for start_n in range(0, (start_m + 1) * BLOCK_M, BLOCK_N):
-            # -- compute qk ----
-            k = tl.load(k_ptrs)
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-            qk += tl.dot(q, k)
-            # compute new m
-            m_curr = tl.maximum(tl.max(qk, 1), m_prev)
-            # correct old l
-            l_prev *= tl.exp(m_prev - m_curr)
-            # attention weights
-            p = tl.exp(qk - m_curr[:, None])
-            l_curr = tl.sum(p, 1) + l_prev
-            # rescale operands of matmuls
-            l_rcp = 1. / l_curr
-            p *= l_rcp
-            acc *= (l_prev * l_rcp)[:, None]
-            # update acc
-            p = p.to(tl.float16)
-            v = tl.load(v_ptrs)
-            acc += tl.dot(p, v)
-            # update m_i and l_i
-            l_prev = l_curr
-            m_prev = m_curr
-            # update pointers
-            k_ptrs += BLOCK_N * stride_kn
-            v_ptrs += BLOCK_N * stride_vk
-        # rematerialize offsets to save registers
-        start_m = tl.program_id(0)
-        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-        # write back l and m
-        l_ptrs = L + off_hz * N_CTX + offs_m
-        m_ptrs = M + off_hz * N_CTX + offs_m
-        tl.store(l_ptrs, l_prev)
-        tl.store(m_ptrs, m_prev)
-        # initialize pointers to output
-        offs_n = tl.arange(0, BLOCK_DMODEL)
-        off_o = off_hz * stride_oh + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
-        out_ptrs = Out + off_o
-        tl.store(out_ptrs, acc)
+# JAX-Flash-Attn2 implementation
+if JAX_FLASH_ATTN2_AVAILABLE:
+    # Create flash attention instance with TRITON platform
+    _flash_attention = jfa.FlashAttention(
+        jfa.AttentionConfig(
+            platform=jfa.Platform.TRITON,
+            backend=jfa.Backend.GPU
+        )
+    )
 
-    @functools.partial(jax.jit, static_argnames=[])
     def triton_flash_attention(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-        """JAX-Triton flash attention implementation."""
-        block_size = 128
-        grid = (jt.cdiv(q.shape[2], block_size), q.shape[0] * q.shape[1])
-        out_shape = [
-            jax.ShapeDtypeStruct(
-                shape=(q.shape[0] * q.shape[1], q.shape[2]), dtype=jnp.float32),
-            jax.ShapeDtypeStruct(
-                shape=(q.shape[0] * q.shape[1], q.shape[2]), dtype=jnp.float32),
-            jax.ShapeDtypeStruct(shape=q.shape, dtype=q.dtype)
-        ]
-
-        metaparams = dict(
-            BLOCK_M=block_size,
-            BLOCK_N=block_size,
-            BLOCK_DMODEL=q.shape[-1],
-            num_warps=4,
-            num_stages=2)
-        _, _, output = jt.triton_call(
-            q, k, v,
-            *jt.strides_from_shape(q.shape),
-            *jt.strides_from_shape(k.shape),
-            *jt.strides_from_shape(v.shape),
-            *jt.strides_from_shape(q.shape),
-            q.shape[0], q.shape[1], q.shape[2],
-            kernel=fused_attention_kernel,
-            out_shape=out_shape,
-            grid=grid,
-            **metaparams)
-        return output
+        """JAX-Flash-Attn2 TRITON implementation."""
+        return _flash_attention(
+            query=q,
+            key=k,
+            value=v,
+            causal=True
+        )
 
 
 class CausalSelfAttention(nn.Module):
@@ -427,20 +336,12 @@ class CausalSelfAttention(nn.Module):
                 )
         
         elif self.config.attention_implementation == 'triton':
-            if not JAX_TRITON_AVAILABLE:
-                raise ImportError("jax-triton is not installed. Install with: pip install jax-triton")
+            if not JAX_FLASH_ATTN2_AVAILABLE:
+                raise ImportError("jax-flash-attn2 is not installed. Install with: pip install jax-flash-attn2")
             
-            # Use JAX-Triton flash attention
-            # Convert from BTNH to BHND format expected by triton kernel
-            q_triton = jnp.transpose(q, (0, 2, 1, 3))  # (B, N, T, H)
-            k_triton = jnp.transpose(k, (0, 2, 1, 3))  # (B, N, T, H)
-            v_triton = jnp.transpose(v, (0, 2, 1, 3))  # (B, N, T, H)
-            
-            # Apply triton flash attention
-            y_triton = triton_flash_attention(q_triton, k_triton, v_triton)
-            
-            # Convert back from BHND to BTNH format
-            y = jnp.transpose(y_triton, (0, 2, 1, 3))  # (B, T, N, H)
+            # Use JAX-Flash-Attn2 TRITON flash attention
+            # Keep tensors in BTNH format as jax-flash-attn2 expects
+            y = triton_flash_attention(q, k, v)
             
         elif self.config.attention_implementation in ['cudnn', 'xla']:
             # Use jax.nn.dot_product_attention with specified implementation

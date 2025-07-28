@@ -223,7 +223,7 @@ def parse_args():
     parser.add_argument(
         "--attention_implementation", type=str, default="naive",
         choices=["naive", "xla", "cudnn", "kvax", "triton"],
-        help="Attention implementation to use: naive (manual), xla (JAX XLA), cudnn (cuDNN), kvax (flash attention), or triton (jax-triton flash attention)"
+        help="Attention implementation to use: naive (manual), xla (JAX XLA), cudnn (cuDNN), kvax (flash attention), or triton (jax-flash-attn2 TRITON)"
     )
     # Gradient clipping parameters
     parser.add_argument(
