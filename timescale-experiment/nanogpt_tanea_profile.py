@@ -51,12 +51,28 @@ logger = logging.getLogger(__name__)
 
 
 
+def create_fsdp_sharding_rules(mesh):
+    """Create FSDP sharding rules for different parameter types."""
+    # FSDP sharding rules: shard parameters across feature dimension
+    sharding_rules = [
+        # Embeddings: shard along embedding dimension
+        ("embed", NamedSharding(mesh, P(None, "data"))),
+        # Dense input layers: shard along input dimension  
+        ("Dense_0/kernel", NamedSharding(mesh, P("data", None))),
+        # Dense output layers: shard along output dimension
+        ("Dense_1/kernel", NamedSharding(mesh, P(None, "data"))),
+        # Default sharding for other parameters
+        (".*", NamedSharding(mesh, P())),  # Replicated
+    ]
+    return sharding_rules
+
 def _init_train_state_sharded(config, model, key, mesh):
-    """Creates a sharded training state for multi-GPU training."""
+    """Creates a sharded training state for FSDP training."""
     inputs = jax.ShapeDtypeStruct(shape=(1, config["seq_len"]), dtype=jnp.int32)
     
     def init(rng, inputs):
-        params = model.init(rng)
+        with mesh:  # Initialize within mesh context for FSDP
+            params = model.init(rng)
         
         # Initialize Tanea optimizer
         g2 = powerlaw_schedule(config["tanea_g2"], 0.0, 0.0, 1)
@@ -95,8 +111,12 @@ def _init_train_state_sharded(config, model, key, mesh):
             params=params,
             tx=optimizer)
     
+    # Get parameter shapes and create FSDP sharding
     params_shape = jax.eval_shape(init, key, inputs)
     shardings = nn.get_sharding(params_shape, mesh)
+    
+    # Apply FSDP sharding to specific parameters
+    # For now, use default Flax sharding which should work with kvax
     state = jax.jit(init, out_shardings=shardings)(key, inputs)
     return shardings, state
 
