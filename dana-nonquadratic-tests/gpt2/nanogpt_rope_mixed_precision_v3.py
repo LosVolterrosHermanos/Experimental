@@ -506,13 +506,18 @@ class GPTWithRoPE(nn.Module):
         assert x.dtype == jnp.bfloat16, f"Embedding output should be bfloat16, got {x.dtype}"
 
         # Apply transformer blocks using nn.scan for memory efficiency
+        def scanned_transformer_block(carry, _):
+            x = carry
+            x = TransformerBlock(self.config, init_std=self.init_std)(x)
+            return x, None
+        
         ScanTransformerBlock = nn.scan(
-            TransformerBlock,
+            scanned_transformer_block,
             variable_axes={'params': 0},
             split_rngs={'params': True},
             length=self.config.n_layer
         )
-        x, _ = ScanTransformerBlock(self.config, init_std=self.init_std)(x)
+        x, _ = ScanTransformerBlock(x, None)
             
         # Final layer norm
         # Cast to float32 for LayerNorm, then back to bfloat16
