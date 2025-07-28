@@ -273,35 +273,27 @@ class CausalSelfAttention(nn.Module):
             # Keep tensors in BTNH format as kvax expects
             # q, k, v are already in (B, T, N, H) format
             
-            # Set attention specs and apply kvax flash attention
-            # Use None for all specs to indicate no sharding (single device)
-            with attention_specs(
-                query_specs=(None, None, None, None),
-                kv_specs=(None, None, None, None),
-            ):
-                # Create attention mask as required by kvax
-                # Set calc_bwd_mask=True to get all 3 masks needed for backward pass
-                # Use proper configuration objects with backward argument
-                fwd_params = get_default_flash_attention_params(backward=False)
-                bwd_params = get_default_flash_attention_params(backward=True)
-                attention_mask = create_attention_mask(
-                    positions, segment_ids, positions, segment_ids,
-                    calc_bwd_mask=True,
-                    fwd_params=fwd_params,
-                    bwd_params=bwd_params
-                )
-                
-                # Apply kvax flash attention with BTNH format
-                y = flash_attention(
-                    query=q,
-                    key=k,
-                    value=v,
-                    query_positions=positions,
-                    query_segment_ids=segment_ids,
-                    kv_positions=positions,
-                    kv_segment_ids=segment_ids,
-                    mask=attention_mask
-                )
+            # For now, fallback to naive implementation when kvax is requested but has device issues
+            # This is a temporary workaround until kvax mesh integration is resolved
+            import warnings
+            warnings.warn("kvax flash attention has device assignment issues, falling back to naive implementation")
+            
+            # Fallback to einsum implementation (no transposes needed)
+            # Direct computation in BTNH format using einsum
+            scale = jnp.bfloat16(1.0 / jnp.sqrt(head_dim))
+            
+            # Attention scores: (B,T,N,H) × (B,S,N,H) -> (B,N,T,S)
+            att = jnp.einsum('btnh,bsnh->bnts', q, k) * scale
+            
+            # Cast to float32 only for softmax (numerically sensitive)
+            att_f32 = att.astype(jnp.float32)
+            mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool_))[None, None, :, :]
+            att_f32 = jnp.where(mask, att_f32, float('-inf'))
+            att_f32 = jax.nn.softmax(att_f32, axis=-1)
+            
+            # Value multiplication: (B,N,T,S) × (B,S,N,H) -> (B,T,N,H)
+            att = att_f32.astype(jnp.bfloat16)
+            y = jnp.einsum('bnts,bsnh->btnh', att, v)
             
         elif self.config.attention_implementation in ['cudnn', 'xla']:
             # Use jax.nn.dot_product_attention with specified implementation
